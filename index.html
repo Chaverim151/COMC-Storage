@@ -1,0 +1,920 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+  <title>COMC Equipment Manager</title>
+  <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800&family=Barlow:wght@400;500;600&display=swap" rel="stylesheet">
+
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+    import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged, sendPasswordResetEmail }
+      from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+    import { getFirestore, collection, doc, getDocs, getDoc, addDoc, updateDoc,
+             deleteDoc, onSnapshot, serverTimestamp, query, orderBy, where }
+      from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+    const firebaseConfig = {
+      apiKey:            "AIzaSyAYZVEJfe8RFgit-0nwIndTCaGE8drUKz4",
+      authDomain:        "comc-storage.firebaseapp.com",
+      projectId:         "comc-storage",
+      storageBucket:     "comc-storage.firebasestorage.app",
+      messagingSenderId: "384295811042",
+      appId:             "1:384295811042:web:0bd625958132fac9532bbb"
+    };
+
+    const app  = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db   = getFirestore(app);
+
+    let currentUser = null;
+    let currentRole = null;
+    let unsubs = [];
+
+    // ── SEED DATA ────────────────────────────────────────────────
+    const SEED_EQUIPMENT = [
+      { name: "AC Unit 12K Btu",       totalQty: 1  },
+      { name: "AC Unit 9K Btu",         totalQty: 3  },
+      { name: "AC Window 5K Btu Unit",  totalQty: 2  },
+      { name: "AC Window 6K Btu Unit",  totalQty: 3  },
+      { name: "Fan",                     totalQty: 5  },
+      { name: "Large Heater",            totalQty: 13 },
+      { name: "Small Heater",            totalQty: 2  },
+      { name: "EZ Spare 125/80R17",      totalQty: 1  },
+      { name: "EZ Spare 145/80R17",      totalQty: 1  },
+      { name: "EZ Spare 155/85R18",      totalQty: 1  },
+      { name: "EZ Spare 135/80R18",      totalQty: 1  },
+      { name: "EZ Spare 145/60R20",      totalQty: 1  },
+      { name: "EZ Spare 175/70R20",      totalQty: 1  },
+      { name: "EZ Spare 145/85R18",      totalQty: 1  },
+      { name: "Spare 55/70D17",          totalQty: 1  },
+      { name: "Spare 145/80D17",         totalQty: 1  },
+    ];
+
+    // ── AUTH ─────────────────────────────────────────────────────
+    onAuthStateChanged(auth, async (user) => {
+      if (user) {
+        currentUser = user;
+        try {
+          const snap = await getDoc(doc(db, "users", user.uid));
+          currentRole = snap.exists() ? snap.data().role : "member";
+        } catch(e) { currentRole = "member"; }
+        showApp();
+      } else {
+        currentUser = null; currentRole = null;
+        showLogin();
+      }
+    });
+
+    window.login = async function() {
+      const email = document.getElementById("l-email").value.trim();
+      const pass  = document.getElementById("l-pass").value.trim();
+      const err   = document.getElementById("l-error");
+      err.textContent = ""; err.style.color = "var(--red)";
+      if (!email || !pass) { err.textContent = "Please enter email and password."; return; }
+      try {
+        await signInWithEmailAndPassword(auth, email, pass);
+      } catch(e) {
+        const codes = ["auth/user-not-found","auth/wrong-password","auth/invalid-credential"];
+        if (codes.includes(e.code)) err.textContent = "Invalid email or password.";
+        else if (e.code === "auth/too-many-requests") err.textContent = "Too many attempts. Try again later.";
+        else err.textContent = "Error: " + e.message;
+      }
+    };
+
+    window.forgotPassword = async function() {
+      const email = document.getElementById("l-email").value.trim();
+      const err   = document.getElementById("l-error");
+      if (!email) { err.style.color = "var(--orange)"; err.textContent = "Enter your email above first."; return; }
+      try {
+        await sendPasswordResetEmail(auth, email);
+        err.style.color = "var(--green)"; err.textContent = "Reset email sent! Check your inbox.";
+      } catch(e) { err.style.color = "var(--red)"; err.textContent = "Could not send reset email."; }
+    };
+
+    window.logout = async function() {
+      unsubs.forEach(u => u());
+      unsubs = [];
+      await signOut(auth);
+    };
+
+    // ── VIEWS ────────────────────────────────────────────────────
+    function showLogin() {
+      document.getElementById("view-login").style.display = "flex";
+      document.getElementById("view-app").style.display   = "none";
+    }
+
+    function showApp() {
+      document.getElementById("view-login").style.display = "none";
+      document.getElementById("view-app").style.display   = "block";
+      document.getElementById("user-name").textContent = currentUser.displayName || currentUser.email;
+      document.getElementById("user-role").textContent = currentRole === "admin" ? "Admin" : "Member";
+      document.querySelectorAll(".admin-only").forEach(el => {
+        el.style.display = currentRole === "admin" ? "" : "none";
+      });
+      loadEquipment();
+      loadActiveCalls();
+      loadLog();
+    }
+
+    // ── EQUIPMENT STATE (shared) ──────────────────────────────────
+    let equipmentMap   = {}; // id -> data
+    let activeCallsMap = {}; // id -> call data (status=open)
+
+    function getInUse(equipId) {
+      return Object.values(activeCallsMap)
+        .flatMap(c => c.items || [])
+        .filter(i => i.equipmentId === equipId)
+        .reduce((s, i) => s + (i.qty || 1), 0);
+    }
+
+    function getAvail(equipId) {
+      const d = equipmentMap[equipId];
+      if (!d) return 0;
+      return Math.max(0, (d.totalQty || 0) - getInUse(equipId) - (d.brokenQty || 0));
+    }
+
+    // ── LOAD EQUIPMENT ───────────────────────────────────────────
+    function loadEquipment() {
+      const container = document.getElementById("equipment-list");
+      container.innerHTML = '<div class="loading">Loading...</div>';
+
+      const u1 = onSnapshot(query(collection(db, "equipment"), orderBy("name")), snap => {
+        equipmentMap = {};
+        snap.forEach(d => { equipmentMap[d.id] = d.data(); });
+        renderEquipmentList();
+        populateCheckoutSelector();
+      });
+
+      const u2 = onSnapshot(query(collection(db, "calls"), where("status","==","open")), snap => {
+        activeCallsMap = {};
+        snap.forEach(d => { activeCallsMap[d.id] = d.data(); });
+        renderEquipmentList();
+        renderActiveCalls();
+        populateCheckoutSelector();
+      });
+
+      unsubs.push(u1, u2);
+    }
+
+    function renderEquipmentList() {
+      const container = document.getElementById("equipment-list");
+      const search = document.getElementById("eq-search")?.value.toLowerCase() || "";
+      container.innerHTML = "";
+
+      const ids = Object.keys(equipmentMap).sort((a,b) =>
+        equipmentMap[a].name.localeCompare(equipmentMap[b].name));
+
+      if (ids.length === 0) {
+        container.innerHTML = '<div class="empty">No equipment found. Use Seed DB to load inventory.</div>';
+        return;
+      }
+
+      ids.forEach(id => {
+        const d      = equipmentMap[id];
+        if (search && !d.name.toLowerCase().includes(search)) return;
+        const inUse  = getInUse(id);
+        const broken = d.brokenQty || 0;
+        const avail  = getAvail(id);
+        const total  = d.totalQty || 0;
+        const pct    = total > 0 ? Math.round((avail / total) * 100) : 0;
+        const statusClass = avail === 0 ? "status-out" : inUse > 0 ? "status-partial" : "status-ok";
+
+        const card = document.createElement("div");
+        card.className = "eq-card";
+        card.innerHTML = `
+          <div class="eq-header">
+            <div class="eq-name">${d.name}</div>
+            <div class="eq-badge ${statusClass}">${avail === 0 ? "OUT" : avail + " avail"}</div>
+          </div>
+          <div class="eq-bar-wrap"><div class="eq-bar" style="width:${pct}%"></div></div>
+          <div class="eq-stats">
+            <span>&#128642; ${inUse} in use</span>
+            <span>&#128683; ${broken} broken</span>
+            <span>&#128230; ${total} total</span>
+          </div>
+          <div class="eq-actions admin-only" style="display:${currentRole==='admin'?'flex':'none'}">
+            <button class="eq-btn btn-broken" onclick="markBroken('${id}','${d.name}')" ${avail<=0?'disabled':''}>&#128683; Broken</button>
+            <button class="eq-btn btn-edit"   onclick="editEquipment('${id}')">&#9998; Edit</button>
+          </div>
+        `;
+        container.appendChild(card);
+      });
+    }
+
+    // ── CHECK OUT TAB ─────────────────────────────────────────────
+    // Holds items staged for the current checkout
+    let checkoutItems = []; // [{equipmentId, name, qty}]
+
+    function populateCheckoutSelector() {
+      const sel = document.getElementById("co-equip-select");
+      if (!sel) return;
+      const current = sel.value;
+      sel.innerHTML = '<option value="">— Select equipment —</option>';
+      Object.keys(equipmentMap).sort((a,b) =>
+        equipmentMap[a].name.localeCompare(equipmentMap[b].name)
+      ).forEach(id => {
+        const avail = getAvail(id);
+        const opt = document.createElement("option");
+        opt.value = id;
+        opt.textContent = equipmentMap[id].name + " (" + avail + " avail)";
+        opt.disabled = avail <= 0;
+        sel.appendChild(opt);
+      });
+      sel.value = current;
+    }
+
+    window.addItemToCheckout = function() {
+      const sel = document.getElementById("co-equip-select");
+      const qty = parseInt(document.getElementById("co-qty").value) || 1;
+      const id  = sel.value;
+      if (!id) { alert("Select an equipment item first."); return; }
+      const avail = getAvail(id);
+      if (qty > avail) { alert("Only " + avail + " available."); return; }
+
+      // Check if already added — update qty instead
+      const existing = checkoutItems.find(i => i.equipmentId === id);
+      if (existing) {
+        existing.qty += qty;
+      } else {
+        checkoutItems.push({ equipmentId: id, name: equipmentMap[id].name, qty });
+      }
+      sel.value = "";
+      document.getElementById("co-qty").value = 1;
+      renderCheckoutItems();
+    };
+
+    function renderCheckoutItems() {
+      const container = document.getElementById("co-items-list");
+      container.innerHTML = "";
+      if (checkoutItems.length === 0) {
+        container.innerHTML = '<div class="empty-small">No items added yet.</div>';
+        return;
+      }
+      checkoutItems.forEach((item, i) => {
+        const row = document.createElement("div");
+        row.className = "staged-item";
+        row.innerHTML = `
+          <div class="staged-name">${item.name}</div>
+          <div class="staged-qty">x${item.qty}</div>
+          <button class="staged-remove" onclick="removeCheckoutItem(${i})">&#10005;</button>
+        `;
+        container.appendChild(row);
+      });
+    }
+
+    window.removeCheckoutItem = function(i) {
+      checkoutItems.splice(i, 1);
+      renderCheckoutItems();
+    };
+
+    window.submitCheckout = async function() {
+      const callNum  = document.getElementById("co-callnum").value.trim();
+      const location = document.getElementById("co-location").value.trim();
+      const member   = document.getElementById("co-member").value.trim();
+      const notes    = document.getElementById("co-notes").value.trim();
+
+      if (!callNum)  { alert("Call number is required."); return; }
+      if (!member)   { alert("Member name is required."); return; }
+      if (checkoutItems.length === 0) { alert("Add at least one equipment item."); return; }
+
+      // Verify availability one more time
+      for (const item of checkoutItems) {
+        if (getAvail(item.equipmentId) < item.qty) {
+          alert(item.name + " no longer has enough availability."); return;
+        }
+      }
+
+      await addDoc(collection(db, "calls"), {
+        callNumber: callNum,
+        location,
+        memberName: member,
+        notes,
+        items: checkoutItems,
+        status: "open",
+        openedBy: currentUser.displayName || currentUser.email,
+        openedByUid: currentUser.uid,
+        openedAt: serverTimestamp(),
+      });
+
+      await addLog({
+        action: "CALL_OPENED",
+        callNumber: callNum,
+        location,
+        memberName: member,
+        items: checkoutItems.map(i => i.name + " x" + i.qty).join(", "),
+        userId: currentUser.uid,
+        userName: currentUser.displayName || currentUser.email,
+      });
+
+      // Clear form
+      checkoutItems = [];
+      renderCheckoutItems();
+      document.getElementById("co-callnum").value  = "";
+      document.getElementById("co-location").value = "";
+      document.getElementById("co-member").value   = "";
+      document.getElementById("co-notes").value    = "";
+
+      // Switch to In Use tab
+      switchTab("inuse", document.querySelector('.tab[data-tab="inuse"]'));
+      showToast("Call #" + callNum + " opened!");
+    };
+
+    // ── IN USE / CHECK IN TAB ─────────────────────────────────────
+    function loadActiveCalls() {
+      const u = onSnapshot(
+        query(collection(db, "calls"), orderBy("openedAt", "desc")),
+        snap => {
+          activeCallsMap = {};
+          snap.forEach(d => {
+            if (d.data().status === "open") activeCallsMap[d.id] = d.data();
+          });
+          renderActiveCalls();
+          renderEquipmentList();
+          populateCheckoutSelector();
+        }
+      );
+      unsubs.push(u);
+    }
+
+    function renderActiveCalls() {
+      const container = document.getElementById("active-calls-list");
+      container.innerHTML = "";
+      const calls = Object.entries(activeCallsMap);
+      if (calls.length === 0) {
+        container.innerHTML = '<div class="empty">&#10003; All equipment is in. No open calls.</div>';
+        return;
+      }
+      calls.sort((a,b) => (b[1].openedAt?.seconds||0) - (a[1].openedAt?.seconds||0));
+      calls.forEach(([id, call]) => {
+        const ts   = call.openedAt?.toDate();
+        const time = ts ? ts.toLocaleString() : "—";
+        const itemsList = (call.items || []).map(i =>
+          `<div class="call-item"><span class="call-item-name">${i.name}</span><span class="call-item-qty">x${i.qty}</span></div>`
+        ).join("");
+
+        const card = document.createElement("div");
+        card.className = "call-card";
+        card.innerHTML = `
+          <div class="call-header">
+            <div class="call-num">Call #${call.callNumber}</div>
+            <div class="call-status-badge">OPEN</div>
+          </div>
+          <div class="call-meta-row">
+            ${call.location   ? `<span>&#128205; ${call.location}</span>` : ""}
+            ${call.memberName ? `<span>&#128100; ${call.memberName}</span>` : ""}
+          </div>
+          <div class="call-items-wrap">
+            <div class="call-items-label">Equipment:</div>
+            ${itemsList}
+          </div>
+          ${call.notes ? `<div class="call-notes">&#128203; ${call.notes}</div>` : ""}
+          <div class="call-footer-meta">Opened by ${call.openedBy} &bull; ${time}</div>
+          <div class="call-actions">
+            <button class="close-call-btn" onclick="closeCall('${id}')">&#10003; Close Call — Return All</button>
+            <button class="partial-return-btn" onclick="partialReturn('${id}')">&#8634; Partial Return</button>
+          </div>
+        `;
+        container.appendChild(card);
+      });
+    }
+
+    window.closeCall = async function(callId) {
+      const call = activeCallsMap[callId];
+      if (!call) return;
+      if (!confirm("Close Call #" + call.callNumber + " and return all equipment?")) return;
+
+      await updateDoc(doc(db, "calls", callId), {
+        status: "closed",
+        closedAt: serverTimestamp(),
+        closedBy: currentUser.displayName || currentUser.email,
+      });
+
+      await addLog({
+        action: "CALL_CLOSED",
+        callNumber: call.callNumber,
+        items: (call.items||[]).map(i => i.name + " x" + i.qty).join(", "),
+        userId: currentUser.uid,
+        userName: currentUser.displayName || currentUser.email,
+      });
+      showToast("Call #" + call.callNumber + " closed.");
+    };
+
+    window.partialReturn = async function(callId) {
+      const call = activeCallsMap[callId];
+      if (!call) return;
+
+      const modal = document.getElementById("modal");
+      const title = document.getElementById("modal-title");
+      const body  = document.getElementById("modal-body");
+      const btn   = document.getElementById("modal-confirm");
+
+      title.textContent = "Partial Return — Call #" + call.callNumber;
+      body.innerHTML = `
+        <p style="font-size:0.82rem;color:var(--muted);margin-bottom:12px;">Select items to return:</p>
+        ${(call.items||[]).map((item,i) => `
+          <div class="form-group" style="display:flex;align-items:center;gap:10px;">
+            <input type="checkbox" id="pr-${i}" checked style="width:18px;height:18px;accent-color:var(--sky);">
+            <label for="pr-${i}" style="flex:1;text-transform:none;letter-spacing:0;font-size:0.9rem;color:var(--text);">${item.name}</label>
+            <input type="number" id="pr-qty-${i}" value="${item.qty}" min="1" max="${item.qty}"
+              style="width:60px;padding:6px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:0.9rem;">
+          </div>
+        `).join("")}
+      `;
+      btn.textContent = "Return Selected";
+      btn.onclick = () => confirmPartialReturn(callId, call);
+      modal.style.display = "flex";
+    };
+
+    async function confirmPartialReturn(callId, call) {
+      const returning = [];
+      const remaining = [];
+
+      (call.items||[]).forEach((item, i) => {
+        const checked  = document.getElementById("pr-" + i)?.checked;
+        const retQty   = parseInt(document.getElementById("pr-qty-" + i)?.value) || item.qty;
+        if (checked && retQty > 0) {
+          returning.push({ ...item, qty: retQty });
+          const leftover = item.qty - retQty;
+          if (leftover > 0) remaining.push({ ...item, qty: leftover });
+        } else {
+          remaining.push(item);
+        }
+      });
+
+      if (returning.length === 0) { alert("Select at least one item to return."); return; }
+
+      if (remaining.length === 0) {
+        // All returned — close the call
+        await updateDoc(doc(db, "calls", callId), {
+          status: "closed",
+          closedAt: serverTimestamp(),
+          closedBy: currentUser.displayName || currentUser.email,
+        });
+      } else {
+        // Update items list
+        await updateDoc(doc(db, "calls", callId), { items: remaining });
+      }
+
+      await addLog({
+        action: "PARTIAL_RETURN",
+        callNumber: call.callNumber,
+        items: returning.map(i => i.name + " x" + i.qty).join(", "),
+        userId: currentUser.uid,
+        userName: currentUser.displayName || currentUser.email,
+      });
+
+      closeModal();
+      showToast("Items returned from Call #" + call.callNumber);
+    }
+
+    // ── BROKEN ───────────────────────────────────────────────────
+    window.markBroken = function(id, name) {
+      const modal = document.getElementById("modal");
+      const title = document.getElementById("modal-title");
+      const body  = document.getElementById("modal-body");
+      const btn   = document.getElementById("modal-confirm");
+      title.textContent = "Mark Broken: " + name;
+      body.innerHTML = `
+        <div class="form-group"><label>Quantity</label>
+          <input id="m-qty" type="number" value="1" min="1"></div>
+        <div class="form-group"><label>Description of Issue</label>
+          <input id="m-notes" type="text" placeholder="Describe what's broken"></div>
+      `;
+      btn.textContent = "Mark Broken";
+      btn.onclick = () => confirmBroken(id, name);
+      modal.style.display = "flex";
+    };
+
+    async function confirmBroken(id, name) {
+      const qty   = parseInt(document.getElementById("m-qty")?.value) || 1;
+      const notes = document.getElementById("m-notes")?.value.trim() || "";
+      const ref   = doc(db, "equipment", id);
+      const snap  = await getDoc(ref);
+      await updateDoc(ref, { brokenQty: (snap.data().brokenQty || 0) + qty });
+      await addLog({
+        action: "BROKEN", equipmentName: name, qty, notes,
+        userId: currentUser.uid,
+        userName: currentUser.displayName || currentUser.email,
+      });
+      closeModal();
+      showToast(name + " marked broken.");
+    }
+
+    // ── ADMIN: ADD/EDIT/DELETE ────────────────────────────────────
+    window.showAddEquipment = function() {
+      const modal = document.getElementById("modal");
+      const title = document.getElementById("modal-title");
+      const body  = document.getElementById("modal-body");
+      const btn   = document.getElementById("modal-confirm");
+      title.textContent = "Add Equipment";
+      body.innerHTML = `
+        <div class="form-group"><label>Name</label>
+          <input id="m-name" type="text" placeholder="e.g. Large Heater"></div>
+        <div class="form-group"><label>Total Quantity</label>
+          <input id="m-total" type="number" value="1" min="1"></div>
+      `;
+      btn.textContent = "Add";
+      btn.onclick = confirmAdd;
+      modal.style.display = "flex";
+    };
+
+    async function confirmAdd() {
+      const name  = document.getElementById("m-name")?.value.trim();
+      const total = parseInt(document.getElementById("m-total")?.value) || 1;
+      if (!name) { alert("Name required."); return; }
+      await addDoc(collection(db, "equipment"), {
+        name, totalQty: total, brokenQty: 0, createdAt: serverTimestamp(),
+      });
+      await addLog({ action: "ADDED", equipmentName: name, qty: total,
+        userId: currentUser.uid, userName: currentUser.displayName || currentUser.email });
+      closeModal();
+    }
+
+    window.editEquipment = async function(id) {
+      const snap = await getDoc(doc(db, "equipment", id));
+      const d    = snap.data();
+      const modal = document.getElementById("modal");
+      const title = document.getElementById("modal-title");
+      const body  = document.getElementById("modal-body");
+      const btn   = document.getElementById("modal-confirm");
+      title.textContent = "Edit: " + d.name;
+      body.innerHTML = `
+        <div class="form-group"><label>Name</label>
+          <input id="m-name" type="text" value="${d.name}"></div>
+        <div class="form-group"><label>Total Quantity</label>
+          <input id="m-total" type="number" value="${d.totalQty}"></div>
+        <div class="form-group"><label>Broken Quantity</label>
+          <input id="m-broken" type="number" value="${d.brokenQty||0}"></div>
+        <button class="delete-btn" onclick="deleteEquipment('${id}')">&#128465; Delete</button>
+      `;
+      btn.textContent = "Save";
+      btn.onclick = () => confirmEdit(id);
+      modal.style.display = "flex";
+    };
+
+    async function confirmEdit(id) {
+      const name   = document.getElementById("m-name")?.value.trim();
+      const total  = parseInt(document.getElementById("m-total")?.value);
+      const broken = parseInt(document.getElementById("m-broken")?.value) || 0;
+      if (!name) { alert("Name required."); return; }
+      await updateDoc(doc(db, "equipment", id), { name, totalQty: total, brokenQty: broken });
+      await addLog({ action: "EDITED", equipmentName: name,
+        userId: currentUser.uid, userName: currentUser.displayName || currentUser.email });
+      closeModal();
+    }
+
+    window.deleteEquipment = async function(id) {
+      const snap = await getDoc(doc(db, "equipment", id));
+      const name = snap.data().name;
+      if (!confirm("Delete " + name + "?")) return;
+      await deleteDoc(doc(db, "equipment", id));
+      await addLog({ action: "DELETED", equipmentName: name,
+        userId: currentUser.uid, userName: currentUser.displayName || currentUser.email });
+      closeModal();
+    };
+
+    window.seedDatabase = async function() {
+      if (!confirm("Seed the database with equipment?")) return;
+      for (const item of SEED_EQUIPMENT) {
+        await addDoc(collection(db, "equipment"), { ...item, brokenQty: 0, createdAt: serverTimestamp() });
+      }
+      alert("Seeded!");
+    };
+
+    window.resetAllEquipment = async function() {
+      if (!confirm("Reset ALL broken counts to 0?")) return;
+      const snap = await getDocs(collection(db, "equipment"));
+      await Promise.all(snap.docs.map(d => updateDoc(doc(db, "equipment", d.id), { brokenQty: 0 })));
+      showToast("All broken counts reset.");
+    };
+
+    // ── LOG ──────────────────────────────────────────────────────
+    async function addLog(entry) {
+      await addDoc(collection(db, "log"), { ...entry, timestamp: serverTimestamp() });
+    }
+
+    function loadLog() {
+      const container = document.getElementById("log-list");
+      container.innerHTML = '<div class="loading">Loading...</div>';
+      const u = onSnapshot(query(collection(db, "log"), orderBy("timestamp", "desc")), snap => {
+        container.innerHTML = "";
+        if (snap.empty) { container.innerHTML = '<div class="empty">No activity yet.</div>'; return; }
+        snap.forEach(d => {
+          const data = d.data();
+          const ts   = data.timestamp?.toDate();
+          const time = ts ? ts.toLocaleString() : "—";
+          const cls  = { CALL_OPENED:"log-out", CALL_CLOSED:"log-in", PARTIAL_RETURN:"log-in",
+                         BROKEN:"log-broken", ADDED:"log-added", EDITED:"log-edited", DELETED:"log-deleted" }[data.action] || "";
+          const row = document.createElement("div");
+          row.className = "log-row " + cls;
+          row.innerHTML = `
+            <div class="log-action">${(data.action||"").replace(/_/g," ")}</div>
+            <div class="log-detail">
+              ${data.callNumber ? "<strong>Call #" + data.callNumber + "</strong> " : ""}
+              ${data.equipmentName ? "<strong>" + data.equipmentName + "</strong>" : ""}
+              ${data.items ? " &mdash; " + data.items : ""}
+              ${data.memberName ? " &bull; " + data.memberName : ""}
+              ${data.location ? " &bull; " + data.location : ""}
+            </div>
+            <div class="log-meta">${data.userName||""} &bull; ${time}</div>
+          `;
+          container.appendChild(row);
+        });
+      });
+      unsubs.push(u);
+    }
+
+    // ── MODAL ────────────────────────────────────────────────────
+    window.closeModal = function() {
+      document.getElementById("modal").style.display = "none";
+    };
+    window.addEventListener("click", e => { if (e.target.id === "modal") closeModal(); });
+
+    // ── SEARCH ───────────────────────────────────────────────────
+    window.filterEquipment = function() { renderEquipmentList(); };
+
+    // ── TOAST ────────────────────────────────────────────────────
+    function showToast(msg) {
+      const t = document.getElementById("toast");
+      t.textContent = msg;
+      t.classList.add("show");
+      setTimeout(() => t.classList.remove("show"), 2800);
+    }
+  </script>
+
+  <style>
+    :root {
+      --sky: #7CC8E8; --sky-dim: #5AAFD4; --steel: #4A7FA5;
+      --dark: #1e2328; --mid: #252c33; --surface: #2e3740;
+      --surface2: #222930; --border: #3a4550;
+      --text: #f0f4f8; --muted: #7a9ab0;
+      --green: #48c78e; --yellow: #ffbd00;
+      --red: #f05050; --orange: #e87040;
+    }
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body { font-family:'Barlow',sans-serif; background:var(--dark); color:var(--text); min-height:100vh; }
+
+    /* LOGIN */
+    #view-login { display:flex; align-items:center; justify-content:center; min-height:100vh; background:linear-gradient(135deg,#1a2530,#1e3040); }
+    .login-box { background:var(--surface); border:1px solid var(--border); border-radius:16px; padding:36px 28px; width:100%; max-width:360px; text-align:center; }
+    .login-box img { height:64px; margin-bottom:16px; }
+    .login-box h1 { font-family:'Barlow Condensed',sans-serif; font-size:1.6rem; color:var(--sky); letter-spacing:.06em; text-transform:uppercase; margin-bottom:4px; }
+    .login-box p { font-size:.78rem; color:var(--muted); margin-bottom:24px; }
+    .login-box input { width:100%; padding:12px 14px; background:var(--surface2); border:1px solid var(--border); border-radius:8px; color:var(--text); font-family:'Barlow',sans-serif; font-size:.95rem; margin-bottom:12px; outline:none; }
+    .login-box input:focus { border-color:var(--sky); }
+    .login-btn { width:100%; padding:13px; background:linear-gradient(135deg,var(--steel),var(--sky-dim)); color:#fff; border:none; border-radius:8px; font-family:'Barlow Condensed',sans-serif; font-size:1.1rem; font-weight:700; letter-spacing:.06em; text-transform:uppercase; cursor:pointer; }
+    .forgot-btn { width:100%; padding:10px; background:none; border:none; color:var(--muted); font-family:'Barlow',sans-serif; font-size:.82rem; cursor:pointer; margin-top:6px; text-decoration:underline; }
+    #l-error { min-height:18px; font-size:.82rem; margin-top:8px; }
+
+    /* APP HEADER */
+    #view-app { display:none; }
+    .app-header { background:linear-gradient(135deg,var(--mid),#1e3040); border-bottom:3px solid var(--sky); padding:12px 16px; display:flex; align-items:center; gap:12px; position:sticky; top:0; z-index:100; }
+    .app-header img { height:40px; }
+    .app-header h1 { font-family:'Barlow Condensed',sans-serif; font-size:1.2rem; font-weight:700; color:var(--sky); letter-spacing:.06em; text-transform:uppercase; flex-grow:1; }
+    .user-info { text-align:right; }
+    .user-info .name { font-size:.82rem; font-weight:600; }
+    .user-info .role { font-size:.68rem; color:var(--sky); text-transform:uppercase; letter-spacing:.08em; }
+    .logout-btn { background:none; border:1px solid var(--border); color:var(--muted); padding:6px 10px; border-radius:6px; font-size:.78rem; cursor:pointer; font-family:'Barlow',sans-serif; }
+
+    /* TABS */
+    .tabs { display:flex; background:var(--mid); border-bottom:1px solid var(--border); overflow-x:auto; }
+    .tab { padding:12px 14px; font-family:'Barlow Condensed',sans-serif; font-size:.82rem; font-weight:600; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); cursor:pointer; border-bottom:3px solid transparent; white-space:nowrap; transition:color .15s,border-color .15s; }
+    .tab.active { color:var(--sky); border-bottom-color:var(--sky); }
+    .tab-content { display:none; padding:16px 14px 32px; }
+    .tab-content.active { display:block; }
+
+    /* TOOLBAR */
+    .toolbar { display:flex; gap:8px; margin-bottom:16px; flex-wrap:wrap; }
+    .toolbar input { flex:1; min-width:0; padding:10px 13px; background:var(--surface); border:1px solid var(--border); border-radius:8px; color:var(--text); font-family:'Barlow',sans-serif; font-size:.9rem; outline:none; }
+    .toolbar input:focus { border-color:var(--sky); }
+    .tbtn { padding:10px 14px; border:none; border-radius:8px; font-family:'Barlow Condensed',sans-serif; font-size:.9rem; font-weight:700; letter-spacing:.05em; text-transform:uppercase; cursor:pointer; white-space:nowrap; }
+    .tbtn-primary { background:linear-gradient(135deg,var(--steel),var(--sky-dim)); color:#fff; }
+    .tbtn-muted { background:var(--surface); border:1px solid var(--border); color:var(--muted); }
+    .tbtn-danger { background:var(--surface); border:1px solid var(--red); color:var(--red); }
+
+    /* EQUIPMENT CARDS */
+    #equipment-list { display:flex; flex-direction:column; gap:10px; }
+    .eq-card { background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:14px; }
+    .eq-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; }
+    .eq-name { font-family:'Barlow Condensed',sans-serif; font-size:1rem; font-weight:700; letter-spacing:.03em; text-transform:uppercase; }
+    .eq-badge { font-family:'Barlow Condensed',sans-serif; font-size:.72rem; font-weight:700; letter-spacing:.08em; padding:3px 8px; border-radius:20px; }
+    .status-ok      { background:rgba(72,199,142,.2); color:var(--green); }
+    .status-partial { background:rgba(255,189,0,.2);  color:var(--yellow); }
+    .status-out     { background:rgba(240,80,80,.2);  color:var(--red); }
+    .eq-bar-wrap { background:var(--surface2); border-radius:4px; height:4px; margin-bottom:8px; }
+    .eq-bar { height:4px; border-radius:4px; background:linear-gradient(90deg,var(--steel),var(--sky)); transition:width .3s; }
+    .eq-stats { display:flex; gap:12px; font-size:.75rem; color:var(--muted); margin-bottom:6px; }
+    .eq-actions { display:flex; gap:6px; }
+    .eq-btn { flex:1; padding:8px 6px; border:none; border-radius:6px; font-family:'Barlow Condensed',sans-serif; font-size:.82rem; font-weight:700; letter-spacing:.04em; text-transform:uppercase; cursor:pointer; }
+    .eq-btn:disabled { opacity:.35; cursor:not-allowed; }
+    .btn-broken { background:rgba(240,80,80,.2);  color:var(--red); }
+    .btn-edit   { background:rgba(255,189,0,.15); color:var(--yellow); }
+
+    /* CHECK OUT FORM */
+    .co-form { background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:16px; margin-bottom:16px; }
+    .co-form h3 { font-family:'Barlow Condensed',sans-serif; font-size:.78rem; font-weight:700; color:var(--muted); letter-spacing:.12em; text-transform:uppercase; margin-bottom:12px; }
+    .form-row { display:flex; gap:8px; margin-bottom:12px; }
+    .form-row .form-group { flex:1; margin-bottom:0; }
+    .form-group { margin-bottom:12px; }
+    .form-group label { display:block; font-size:.72rem; font-weight:600; color:var(--muted); letter-spacing:.08em; text-transform:uppercase; margin-bottom:5px; }
+    .form-group input, .form-group select, .form-group textarea {
+      width:100%; padding:10px 12px; background:var(--surface2); border:1px solid var(--border);
+      border-radius:7px; color:var(--text); font-family:'Barlow',sans-serif; font-size:.9rem;
+      outline:none; -webkit-appearance:none; transition:border-color .15s;
+    }
+    .form-group input:focus, .form-group select:focus { border-color:var(--sky); }
+    .form-group input::placeholder { color:#3d5060; }
+    .add-item-row { display:flex; gap:8px; align-items:flex-end; }
+    .add-item-row .form-group { flex:1; margin-bottom:0; }
+    .add-item-row .qty-group { width:80px; flex-shrink:0; margin-bottom:0; }
+
+    /* STAGED ITEMS */
+    #co-items-list { margin:12px 0; display:flex; flex-direction:column; gap:6px; }
+    .staged-item { display:flex; align-items:center; gap:10px; background:var(--surface2); border:1px solid var(--border); border-radius:7px; padding:8px 12px; }
+    .staged-name { flex:1; font-size:.9rem; }
+    .staged-qty  { font-family:'Barlow Condensed',sans-serif; font-weight:700; color:var(--sky); font-size:.9rem; }
+    .staged-remove { background:none; border:none; color:var(--red); font-size:1rem; cursor:pointer; padding:0 4px; }
+    .empty-small { color:var(--muted); font-size:.82rem; padding:8px 0; text-align:center; }
+
+    .submit-checkout-btn { width:100%; padding:13px; background:linear-gradient(135deg,var(--steel),var(--sky-dim)); color:#fff; border:none; border-radius:8px; font-family:'Barlow Condensed',sans-serif; font-size:1.1rem; font-weight:700; letter-spacing:.06em; text-transform:uppercase; cursor:pointer; margin-top:4px; }
+    .submit-checkout-btn:active { opacity:.85; }
+
+    /* CALL CARDS */
+    #active-calls-list { display:flex; flex-direction:column; gap:12px; }
+    .call-card { background:var(--surface); border:1px solid var(--border); border-left:3px solid var(--yellow); border-radius:10px; padding:14px; }
+    .call-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; }
+    .call-num { font-family:'Barlow Condensed',sans-serif; font-size:1.2rem; font-weight:800; color:var(--text); letter-spacing:.04em; }
+    .call-status-badge { font-family:'Barlow Condensed',sans-serif; font-size:.7rem; font-weight:700; background:rgba(255,189,0,.2); color:var(--yellow); padding:3px 8px; border-radius:20px; letter-spacing:.08em; }
+    .call-meta-row { display:flex; flex-wrap:wrap; gap:10px; font-size:.82rem; color:var(--muted); margin-bottom:10px; }
+    .call-items-wrap { margin-bottom:8px; }
+    .call-items-label { font-size:.68rem; font-weight:600; color:var(--muted); letter-spacing:.1em; text-transform:uppercase; margin-bottom:6px; }
+    .call-item { display:flex; justify-content:space-between; align-items:center; padding:6px 10px; background:var(--surface2); border-radius:6px; margin-bottom:4px; }
+    .call-item-name { font-size:.88rem; }
+    .call-item-qty  { font-family:'Barlow Condensed',sans-serif; font-weight:700; color:var(--sky); font-size:.88rem; }
+    .call-notes { font-size:.8rem; color:var(--muted); margin-bottom:8px; }
+    .call-footer-meta { font-size:.72rem; color:var(--muted); margin-bottom:10px; }
+    .call-actions { display:flex; gap:8px; }
+    .close-call-btn { flex:2; padding:10px; background:rgba(72,199,142,.2); color:var(--green); border:1px solid rgba(72,199,142,.3); border-radius:7px; font-family:'Barlow Condensed',sans-serif; font-size:.88rem; font-weight:700; text-transform:uppercase; cursor:pointer; }
+    .partial-return-btn { flex:1; padding:10px; background:rgba(124,200,232,.15); color:var(--sky); border:1px solid rgba(124,200,232,.3); border-radius:7px; font-family:'Barlow Condensed',sans-serif; font-size:.88rem; font-weight:700; text-transform:uppercase; cursor:pointer; }
+
+    /* LOG */
+    #log-list { display:flex; flex-direction:column; gap:8px; }
+    .log-row { background:var(--surface); border:1px solid var(--border); border-left:3px solid var(--border); border-radius:8px; padding:10px 12px; }
+    .log-out     { border-left-color:var(--green); }
+    .log-in      { border-left-color:var(--sky); }
+    .log-broken  { border-left-color:var(--red); }
+    .log-added   { border-left-color:var(--yellow); }
+    .log-edited  { border-left-color:var(--yellow); }
+    .log-deleted { border-left-color:var(--orange); }
+    .log-action { font-family:'Barlow Condensed',sans-serif; font-size:.72rem; font-weight:700; letter-spacing:.1em; color:var(--muted); text-transform:uppercase; margin-bottom:3px; }
+    .log-detail { font-size:.88rem; line-height:1.4; }
+    .log-meta   { font-size:.72rem; color:var(--muted); margin-top:4px; }
+
+    /* MODAL */
+    #modal { display:none; position:fixed; inset:0; background:rgba(0,0,0,.7); align-items:center; justify-content:center; z-index:999; padding:16px; }
+    .modal-box { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:24px 20px; width:100%; max-width:420px; max-height:90vh; overflow-y:auto; }
+    .modal-box h2 { font-family:'Barlow Condensed',sans-serif; font-size:1.1rem; font-weight:700; color:var(--sky); letter-spacing:.05em; text-transform:uppercase; margin-bottom:16px; }
+    .modal-actions { display:flex; gap:8px; margin-top:16px; }
+    .modal-cancel { flex:1; padding:11px; background:var(--surface2); border:1px solid var(--border); color:var(--muted); border-radius:8px; font-family:'Barlow Condensed',sans-serif; font-size:1rem; font-weight:700; cursor:pointer; text-transform:uppercase; }
+    .modal-ok { flex:2; padding:11px; background:linear-gradient(135deg,var(--steel),var(--sky-dim)); color:#fff; border:none; border-radius:8px; font-family:'Barlow Condensed',sans-serif; font-size:1rem; font-weight:700; cursor:pointer; text-transform:uppercase; letter-spacing:.05em; }
+    .delete-btn { width:100%; margin-top:8px; padding:10px; background:rgba(240,80,80,.15); color:var(--red); border:1px solid rgba(240,80,80,.3); border-radius:8px; font-family:'Barlow Condensed',sans-serif; font-size:.9rem; font-weight:700; cursor:pointer; text-transform:uppercase; }
+
+    /* TOAST */
+    #toast { position:fixed; bottom:24px; left:50%; transform:translateX(-50%) translateY(80px); background:var(--steel); color:#fff; padding:10px 20px; border-radius:20px; font-size:.88rem; font-weight:600; opacity:0; transition:opacity .3s,transform .3s; z-index:9999; pointer-events:none; }
+    #toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
+
+    .loading, .empty { text-align:center; color:var(--muted); padding:40px 0; font-size:.88rem; }
+    .form-submit { width:100%; padding:13px; background:linear-gradient(135deg,var(--steel),var(--sky-dim)); color:#fff; border:none; border-radius:8px; font-family:'Barlow Condensed',sans-serif; font-size:1.1rem; font-weight:700; letter-spacing:.06em; text-transform:uppercase; cursor:pointer; margin-top:4px; }
+  </style>
+</head>
+<body>
+
+<!-- LOGIN -->
+<div id="view-login">
+  <div class="login-box">
+    <img src="https://i.ibb.co/WWx03S58/updated-logo.png" alt="COMC Logo">
+    <h1>Equipment Manager</h1>
+    <p>Chaverim of Middlesex County</p>
+    <input type="email"    id="l-email" placeholder="Email address">
+    <input type="password" id="l-pass"  placeholder="Password"
+           onkeydown="if(event.key==='Enter') login()">
+    <button class="login-btn" onclick="login()">Sign In</button>
+    <button class="forgot-btn" onclick="forgotPassword()">Forgot Password?</button>
+    <div id="l-error"></div>
+  </div>
+</div>
+
+<!-- APP -->
+<div id="view-app">
+  <div class="app-header">
+    <img src="https://i.ibb.co/WWx03S58/updated-logo.png" alt="Logo">
+    <h1>Equipment</h1>
+    <div class="user-info">
+      <div class="name" id="user-name"></div>
+      <div class="role" id="user-role"></div>
+    </div>
+    <button class="logout-btn" onclick="logout()">Sign Out</button>
+  </div>
+
+  <div class="tabs">
+    <div class="tab active" data-tab="checkout" onclick="switchTab('checkout',this)">&#128229; Check Out</div>
+    <div class="tab"        data-tab="inuse"    onclick="switchTab('inuse',this)">&#128642; In Use</div>
+    <div class="tab"        data-tab="inventory" onclick="switchTab('inventory',this)">&#128230; Inventory</div>
+    <div class="tab"        data-tab="log"      onclick="switchTab('log',this)">&#128203; Log</div>
+  </div>
+
+  <!-- CHECK OUT TAB -->
+  <div id="tab-checkout" class="tab-content active">
+
+    <div class="co-form">
+      <h3>&#128222; Call Details</h3>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Call Number *</label>
+          <input type="text" id="co-callnum" placeholder="e.g. 247">
+        </div>
+        <div class="form-group">
+          <label>Member Name *</label>
+          <input type="text" id="co-member" placeholder="Your name">
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Location</label>
+        <input type="text" id="co-location" placeholder="Address or cross-streets">
+      </div>
+      <div class="form-group">
+        <label>Notes</label>
+        <input type="text" id="co-notes" placeholder="Optional">
+      </div>
+    </div>
+
+    <div class="co-form">
+      <h3>&#128230; Add Equipment to Call</h3>
+      <div class="add-item-row">
+        <div class="form-group">
+          <label>Equipment</label>
+          <select id="co-equip-select">
+            <option value="">— Select equipment —</option>
+          </select>
+        </div>
+        <div class="form-group qty-group">
+          <label>Qty</label>
+          <input type="number" id="co-qty" value="1" min="1">
+        </div>
+      </div>
+      <button class="tbtn tbtn-muted" onclick="addItemToCheckout()" style="width:100%;margin-bottom:4px;">+ Add Item</button>
+      <div id="co-items-list"><div class="empty-small">No items added yet.</div></div>
+    </div>
+
+    <button class="submit-checkout-btn" onclick="submitCheckout()">&#128229; Open Call &amp; Check Out</button>
+  </div>
+
+  <!-- IN USE TAB -->
+  <div id="tab-inuse" class="tab-content">
+    <div id="active-calls-list"></div>
+  </div>
+
+  <!-- INVENTORY TAB -->
+  <div id="tab-inventory" class="tab-content">
+    <div class="toolbar">
+      <input type="text" id="eq-search" placeholder="&#128269; Search equipment..." oninput="filterEquipment()">
+      <button class="tbtn tbtn-primary admin-only" onclick="showAddEquipment()">+ Add</button>
+      <button class="tbtn tbtn-muted   admin-only" onclick="seedDatabase()">&#127793; Seed</button>
+      <button class="tbtn tbtn-danger  admin-only" onclick="resetAllEquipment()">&#8635; Reset</button>
+    </div>
+    <div id="equipment-list"></div>
+  </div>
+
+  <!-- LOG TAB -->
+  <div id="tab-log" class="tab-content">
+    <div id="log-list"></div>
+  </div>
+</div>
+
+<!-- MODAL -->
+<div id="modal">
+  <div class="modal-box">
+    <h2 id="modal-title"></h2>
+    <div id="modal-body"></div>
+    <div class="modal-actions">
+      <button class="modal-cancel" onclick="closeModal()">Cancel</button>
+      <button class="modal-ok" id="modal-confirm">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<!-- TOAST -->
+<div id="toast"></div>
+
+<script>
+  function switchTab(name, el) {
+    document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+    document.querySelectorAll(".tab-content").forEach(t => t.classList.remove("active"));
+    if (el) el.classList.add("active");
+    document.getElementById("tab-" + name).classList.add("active");
+  }
+</script>
+
+</body>
+</html>
