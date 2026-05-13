@@ -7,11 +7,12 @@
   <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800&family=Barlow:wght@400;500;600&display=swap" rel="stylesheet">
 
   <script type="module">
-    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-    import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged, sendPasswordResetEmail }
+    import { initializeApp, initializeApp as initSecondary } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+    import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged, sendPasswordResetEmail,
+             createUserWithEmailAndPassword, updateProfile, deleteUser, getAdditionalUserInfo }
       from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
     import { getFirestore, collection, doc, getDocs, getDoc, addDoc, updateDoc,
-             deleteDoc, onSnapshot, serverTimestamp, query, orderBy, where }
+             deleteDoc, onSnapshot, serverTimestamp, query, orderBy, where, setDoc }
       from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
     const firebaseConfig = {
@@ -29,6 +30,7 @@
 
     let currentUser = null;
     let currentRole = null;
+    let currentUserUnit = null;
     let unsubs = [];
 
     // ── SEED DATA ────────────────────────────────────────────────
@@ -57,38 +59,71 @@
         currentUser = user;
         try {
           const snap = await getDoc(doc(db, "users", user.uid));
-          currentRole = snap.exists() ? snap.data().role : "member";
-        } catch(e) { currentRole = "member"; }
+          if (snap.exists()) {
+            currentRole     = snap.data().role       || "member";
+            currentUserUnit = snap.data().unitNumber || null;
+          } else {
+            currentRole = "member"; currentUserUnit = null;
+          }
+        } catch(e) { currentRole = "member"; currentUserUnit = null; }
         showApp();
       } else {
-        currentUser = null; currentRole = null;
+        currentUser = null; currentRole = null; currentUserUnit = null;
         showLogin();
       }
     });
 
+    async function lookupEmailByUnit(unit) {
+      console.log("Looking up unit:", unit);
+      const snap = await getDocs(collection(db, "users"));
+      console.log("Total users found:", snap.size);
+      let email = null;
+      snap.forEach(d => {
+        const data = d.data();
+        console.log("User doc:", d.id, "unitNumber:", data.unitNumber, "email:", data.email);
+        if (String(data.unitNumber).trim() === String(unit).trim()) {
+          email = data.email;
+        }
+      });
+      console.log("Found email:", email);
+      return email;
+    }
+
     window.login = async function() {
-      const email = document.getElementById("l-email").value.trim();
-      const pass  = document.getElementById("l-pass").value.trim();
-      const err   = document.getElementById("l-error");
+      const unit = document.getElementById("l-unit").value.trim().replace(/^MC-?/i,"");
+      const pass = document.getElementById("l-pass").value.trim();
+      const err  = document.getElementById("l-error");
       err.textContent = ""; err.style.color = "var(--red)";
-      if (!email || !pass) { err.textContent = "Please enter email and password."; return; }
+      if (!unit || !pass) { err.textContent = "Please enter your unit number and password."; return; }
+
+      let email = null;
+      try { email = await lookupEmailByUnit(unit); } catch(e) {}
+
+      if (!email) { err.textContent = "Unit number not found. Contact your admin."; return; }
+
       try {
         await signInWithEmailAndPassword(auth, email, pass);
       } catch(e) {
         const codes = ["auth/user-not-found","auth/wrong-password","auth/invalid-credential"];
-        if (codes.includes(e.code)) err.textContent = "Invalid email or password.";
+        if (codes.includes(e.code)) err.textContent = "Incorrect password.";
         else if (e.code === "auth/too-many-requests") err.textContent = "Too many attempts. Try again later.";
         else err.textContent = "Error: " + e.message;
       }
     };
 
     window.forgotPassword = async function() {
-      const email = document.getElementById("l-email").value.trim();
-      const err   = document.getElementById("l-error");
-      if (!email) { err.style.color = "var(--orange)"; err.textContent = "Enter your email above first."; return; }
+      const unit = document.getElementById("l-unit").value.trim().replace(/^MC-?/i,"");
+      const err  = document.getElementById("l-error");
+      if (!unit) { err.style.color = "var(--orange)"; err.textContent = "Enter your unit number above first."; return; }
+
+      let email = null;
+      try { email = await lookupEmailByUnit(unit); } catch(e) {}
+
+      if (!email) { err.style.color = "var(--red)"; err.textContent = "Unit number not found."; return; }
+
       try {
         await sendPasswordResetEmail(auth, email);
-        err.style.color = "var(--green)"; err.textContent = "Reset email sent! Check your inbox.";
+        err.style.color = "var(--green)"; err.textContent = "Reset email sent to your registered address!";
       } catch(e) { err.style.color = "var(--red)"; err.textContent = "Could not send reset email."; }
     };
 
@@ -112,9 +147,13 @@
       document.querySelectorAll(".admin-only").forEach(el => {
         el.style.display = currentRole === "admin" ? "" : "none";
       });
+      // Pre-fill member name on checkout form
+      const memberField = document.getElementById("co-member");
+      if (memberField) memberField.value = currentUser.displayName || currentUser.email;
       loadEquipment();
       loadActiveCalls();
       loadLog();
+      if (currentRole === "admin") loadUsers();
     }
 
     // ── EQUIPMENT STATE (shared) ──────────────────────────────────
@@ -289,6 +328,7 @@
         callNumber: callNum,
         location,
         memberName: member,
+        memberUnit: currentUserUnit || "",
         notes,
         items: checkoutItems,
         status: "open",
@@ -362,7 +402,7 @@
           </div>
           <div class="call-meta-row">
             ${call.location   ? `<span>&#128205; ${call.location}</span>` : ""}
-            ${call.memberName ? `<span>&#128100; ${call.memberName}</span>` : ""}
+            ${call.memberName ? `<span>&#128100; ${call.memberName}${call.memberUnit ? ' (MC-'+call.memberUnit+')' : ''}</span>` : ""}
           </div>
           <div class="call-items-wrap">
             <div class="call-items-label">Equipment:</div>
@@ -589,6 +629,192 @@
       showToast("All broken counts reset.");
     };
 
+    // ── USER MANAGEMENT ──────────────────────────────────────────
+    // Use a secondary app instance so creating users doesn't sign out the admin
+    const secondaryApp  = initSecondary(firebaseConfig, "secondary");
+    const secondaryAuth = getAuth(secondaryApp);
+
+    window.showAddUser = function() {
+      const modal = document.getElementById("modal");
+      document.getElementById("modal-title").textContent = "Add New User";
+      document.getElementById("modal-body").innerHTML = `
+        <div class="form-group"><label>Display Name</label>
+          <input id="u-name" type="text" placeholder="e.g. Shmuel Eidelman"></div>
+        <div class="form-group"><label>Unit Number</label>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span style="color:var(--sky);font-family:'Barlow Condensed',sans-serif;font-weight:700;flex-shrink:0;">MC-</span>
+            <input id="u-unit" type="text" placeholder="e.g. 412" inputmode="numeric" style="flex:1;">
+          </div>
+        </div>
+        <div class="form-group"><label>Email (for password reset)</label>
+          <input id="u-email" type="email" placeholder="user@example.com"></div>
+        <div class="form-group"><label>Password</label>
+          <input id="u-pass" type="password" placeholder="Min 6 characters"></div>
+        <div class="form-group"><label>Role</label>
+          <select id="u-role">
+            <option value="member">Member</option>
+            <option value="admin">Admin</option>
+          </select>
+        </div>
+        <div id="u-error" style="color:var(--red);font-size:.82rem;min-height:18px;margin-top:4px;"></div>
+      `;
+      document.getElementById("modal-confirm").textContent = "Create User";
+      document.getElementById("modal-confirm").onclick = confirmAddUser;
+      modal.style.display = "flex";
+    };
+
+    async function confirmAddUser() {
+      const name  = document.getElementById("u-name").value.trim();
+      const unit  = document.getElementById("u-unit").value.trim().replace(/^MC-?/i,"");
+      const email = document.getElementById("u-email").value.trim();
+      const pass  = document.getElementById("u-pass").value.trim();
+      const role  = document.getElementById("u-role").value;
+      const err   = document.getElementById("u-error");
+      err.textContent = "";
+
+      if (!name || !unit || !email || !pass) { err.textContent = "All fields are required."; return; }
+      if (pass.length < 6) { err.textContent = "Password must be at least 6 characters."; return; }
+
+      // Check unit number not already taken
+      const allUsers = await getDocs(collection(db, "users"));
+      let unitTaken = false;
+      allUsers.forEach(d => { if (d.data().unitNumber === unit) unitTaken = true; });
+      if (unitTaken) { err.textContent = "Unit number MC-" + unit + " is already in use."; return; }
+
+      try {
+        const cred = await createUserWithEmailAndPassword(secondaryAuth, email, pass);
+        await updateProfile(cred.user, { displayName: name });
+
+        await setDoc(doc(db, "users", cred.user.uid), {
+          displayName: name,
+          unitNumber: unit,
+          email,
+          role,
+          createdAt: serverTimestamp(),
+          createdBy: currentUser.displayName || currentUser.email,
+        });
+
+        await signOut(secondaryAuth);
+
+        await addLog({
+          action: "USER_ADDED", equipmentName: name + " (MC-" + unit + ") as " + role,
+          userId: currentUser.uid, userName: currentUser.displayName || currentUser.email,
+        });
+
+        closeModal();
+        loadUsers();
+        showToast("User MC-" + unit + " created!");
+      } catch(e) {
+        if (e.code === "auth/email-already-in-use") err.textContent = "Email already in use.";
+        else if (e.code === "auth/invalid-email") err.textContent = "Invalid email address.";
+        else err.textContent = "Error: " + e.message;
+      }
+    }
+
+    window.editUser = async function(uid) {
+      const snap = await getDoc(doc(db, "users", uid));
+      const d    = snap.exists() ? snap.data() : {};
+      const modal = document.getElementById("modal");
+      document.getElementById("modal-title").textContent = "Edit User";
+      document.getElementById("modal-body").innerHTML = `
+        <div class="form-group"><label>Display Name</label>
+          <input id="u-name" type="text" value="${d.displayName || ''}"></div>
+        <div class="form-group"><label>Unit Number</label>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span style="color:var(--sky);font-family:'Barlow Condensed',sans-serif;font-weight:700;flex-shrink:0;">MC-</span>
+            <input id="u-unit" type="text" value="${d.unitNumber || ''}" inputmode="numeric" style="flex:1;">
+          </div>
+        </div>
+        <div class="form-group"><label>Email (for password reset)</label>
+          <input id="u-email" type="email" value="${d.email || ''}"></div>
+        <div class="form-group"><label>Role</label>
+          <select id="u-role">
+            <option value="member" ${d.role==='member'?'selected':''}>Member</option>
+            <option value="admin"  ${d.role==='admin' ?'selected':''}>Admin</option>
+          </select>
+        </div>
+        <div id="u-error" style="color:var(--red);font-size:.82rem;min-height:18px;margin-top:4px;"></div>
+        <button class="delete-btn" onclick="removeUser('${uid}','${d.displayName||''}')">&#128465; Remove User</button>
+      `;
+      document.getElementById("modal-confirm").textContent = "Save";
+      document.getElementById("modal-confirm").onclick = () => confirmEditUser(uid, d);
+      modal.style.display = "flex";
+    };
+
+    async function confirmEditUser(uid, oldData) {
+      const name  = document.getElementById("u-name").value.trim();
+      const unit  = document.getElementById("u-unit").value.trim().replace(/^MC-?/i,"");
+      const email = document.getElementById("u-email").value.trim();
+      const role  = document.getElementById("u-role").value;
+      const err   = document.getElementById("u-error");
+      err.textContent = "";
+
+      if (!name || !unit) { err.textContent = "Name and unit number are required."; return; }
+
+      await updateDoc(doc(db, "users", uid), { displayName: name, unitNumber: unit, email, role });
+
+      await addLog({
+        action: "USER_EDITED", equipmentName: name + " MC-" + unit + " — role: " + role,
+        userId: currentUser.uid, userName: currentUser.displayName || currentUser.email,
+      });
+
+      closeModal();
+      loadUsers();
+      showToast("User updated!");
+    }
+
+    window.removeUser = async function(uid, name) {
+      if (!confirm("Remove user " + name + "? They will no longer be able to log in.")) return;
+      await deleteDoc(doc(db, "users", uid));
+      await addLog({
+        action: "USER_REMOVED", equipmentName: name,
+        userId: currentUser.uid, userName: currentUser.displayName || currentUser.email,
+      });
+      closeModal();
+      loadUsers();
+      showToast("User " + name + " removed.");
+    };
+
+    window.sendReset = async function(email) {
+      await sendPasswordResetEmail(auth, email);
+      showToast("Password reset email sent to " + email);
+    };
+
+    function loadUsers() {
+      const container = document.getElementById("users-list");
+      if (!container) return;
+      container.innerHTML = '<div class="loading">Loading users...</div>';
+      onSnapshot(query(collection(db, "users"), orderBy("displayName")), snap => {
+        container.innerHTML = "";
+        if (snap.empty) {
+          container.innerHTML = '<div class="empty">No users found.</div>';
+          return;
+        }
+        snap.forEach(d => {
+          const u = d.data();
+          const card = document.createElement("div");
+          card.className = "user-card";
+          card.innerHTML = `
+            <div class="user-info-row">
+              <div class="user-avatar">${(u.displayName||u.email||'?')[0].toUpperCase()}</div>
+              <div class="user-details">
+                <div class="user-display-name">${u.displayName || '—'}</div>
+                <div class="user-email">MC-${u.unitNumber || '???'} &bull; ${u.email || '—'}</div>
+              </div>
+              <div class="user-role-badge ${u.role === 'admin' ? 'role-admin' : 'role-member'}">
+                ${u.role || 'member'}
+              </div>
+            </div>
+            <div class="user-actions">
+              <button class="user-btn" onclick="editUser('${d.id}')">&#9998; Edit</button>
+              <button class="user-btn" onclick="sendReset('${u.email}')">&#128274; Reset Password</button>
+            </div>
+          `;
+          container.appendChild(card);
+        });
+      });
+    }
+
     // ── LOG ──────────────────────────────────────────────────────
     async function addLog(entry) {
       await addDoc(collection(db, "log"), { ...entry, timestamp: serverTimestamp() });
@@ -780,6 +1006,21 @@
     .modal-ok { flex:2; padding:11px; background:linear-gradient(135deg,var(--steel),var(--sky-dim)); color:#fff; border:none; border-radius:8px; font-family:'Barlow Condensed',sans-serif; font-size:1rem; font-weight:700; cursor:pointer; text-transform:uppercase; letter-spacing:.05em; }
     .delete-btn { width:100%; margin-top:8px; padding:10px; background:rgba(240,80,80,.15); color:var(--red); border:1px solid rgba(240,80,80,.3); border-radius:8px; font-family:'Barlow Condensed',sans-serif; font-size:.9rem; font-weight:700; cursor:pointer; text-transform:uppercase; }
 
+    /* USER CARDS */
+    #users-list { display:flex; flex-direction:column; gap:10px; }
+    .user-card { background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:14px; }
+    .user-info-row { display:flex; align-items:center; gap:12px; margin-bottom:10px; }
+    .user-avatar { width:40px; height:40px; border-radius:50%; background:linear-gradient(135deg,var(--steel),var(--sky-dim)); display:flex; align-items:center; justify-content:center; font-family:'Barlow Condensed',sans-serif; font-size:1.2rem; font-weight:700; color:#fff; flex-shrink:0; }
+    .user-details { flex:1; min-width:0; }
+    .user-display-name { font-weight:600; font-size:.95rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .user-email { font-size:.75rem; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .user-role-badge { font-family:'Barlow Condensed',sans-serif; font-size:.7rem; font-weight:700; letter-spacing:.08em; padding:3px 8px; border-radius:20px; flex-shrink:0; text-transform:uppercase; }
+    .role-admin  { background:rgba(124,200,232,.2); color:var(--sky); }
+    .role-member { background:rgba(122,154,176,.15); color:var(--muted); }
+    .user-actions { display:flex; gap:8px; }
+    .user-btn { flex:1; padding:8px; background:var(--surface2); border:1px solid var(--border); color:var(--text); border-radius:6px; font-family:'Barlow Condensed',sans-serif; font-size:.82rem; font-weight:600; letter-spacing:.04em; text-transform:uppercase; cursor:pointer; }
+    .user-btn:active { opacity:.7; }
+
     /* TOAST */
     #toast { position:fixed; bottom:24px; left:50%; transform:translateX(-50%) translateY(80px); background:var(--steel); color:#fff; padding:10px 20px; border-radius:20px; font-size:.88rem; font-weight:600; opacity:0; transition:opacity .3s,transform .3s; z-index:9999; pointer-events:none; }
     #toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
@@ -796,8 +1037,13 @@
     <img src="https://i.ibb.co/WWx03S58/updated-logo.png" alt="COMC Logo">
     <h1>Equipment Manager</h1>
     <p>Chaverim of Middlesex County</p>
-    <input type="email"    id="l-email" placeholder="Email address">
-    <input type="password" id="l-pass"  placeholder="Password"
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">
+      <span style="color:var(--sky);font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:1rem;flex-shrink:0;">MC-</span>
+      <input type="text" id="l-unit" placeholder="Unit Number (e.g. 412)"
+             inputmode="numeric" style="margin-bottom:0;flex:1;"
+             onkeydown="if(event.key==='Enter') login()">
+    </div>
+    <input type="password" id="l-pass" placeholder="Password"
            onkeydown="if(event.key==='Enter') login()">
     <button class="login-btn" onclick="login()">Sign In</button>
     <button class="forgot-btn" onclick="forgotPassword()">Forgot Password?</button>
@@ -818,10 +1064,11 @@
   </div>
 
   <div class="tabs">
-    <div class="tab active" data-tab="checkout" onclick="switchTab('checkout',this)">&#128229; Check Out</div>
-    <div class="tab"        data-tab="inuse"    onclick="switchTab('inuse',this)">&#128642; In Use</div>
+    <div class="tab active" data-tab="checkout"  onclick="switchTab('checkout',this)">&#128229; Check Out</div>
+    <div class="tab"        data-tab="inuse"     onclick="switchTab('inuse',this)">&#128642; In Use</div>
     <div class="tab"        data-tab="inventory" onclick="switchTab('inventory',this)">&#128230; Inventory</div>
-    <div class="tab"        data-tab="log"      onclick="switchTab('log',this)">&#128203; Log</div>
+    <div class="tab admin-only" data-tab="users" onclick="switchTab('users',this)">&#128101; Users</div>
+    <div class="tab"        data-tab="log"       onclick="switchTab('log',this)">&#128203; Log</div>
   </div>
 
   <!-- CHECK OUT TAB -->
@@ -835,7 +1082,7 @@
           <input type="text" id="co-callnum" placeholder="e.g. 247">
         </div>
         <div class="form-group">
-          <label>Member Name *</label>
+          <label>Member</label>
           <input type="text" id="co-member" placeholder="Your name">
         </div>
       </div>
@@ -884,6 +1131,14 @@
       <button class="tbtn tbtn-danger  admin-only" onclick="resetAllEquipment()">&#8635; Reset</button>
     </div>
     <div id="equipment-list"></div>
+  </div>
+
+  <!-- USERS TAB (admin only) -->
+  <div id="tab-users" class="tab-content">
+    <div class="toolbar">
+      <button class="tbtn tbtn-primary" onclick="showAddUser()" style="width:100%;">+ Add New User</button>
+    </div>
+    <div id="users-list"></div>
   </div>
 
   <!-- LOG TAB -->
