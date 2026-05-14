@@ -648,15 +648,17 @@
         </div>
         <div class="form-group"><label>Email (for password reset)</label>
           <input id="u-email" type="email" placeholder="user@example.com"></div>
-        <div class="form-group"><label>Password</label>
-          <input id="u-pass" type="password" placeholder="Min 6 characters"></div>
         <div class="form-group"><label>Role</label>
           <select id="u-role">
             <option value="member">Member</option>
             <option value="admin">Admin</option>
           </select>
         </div>
-        <div id="u-error" style="color:var(--red);font-size:.82rem;min-height:18px;margin-top:4px;"></div>
+        <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;font-size:.82rem;color:var(--muted);margin-top:4px;line-height:1.5;">
+          &#128274; A temporary password <strong style="color:var(--sky);">Chaverim1!</strong> will be set.<br>
+          Tell the member to use <strong>Forgot Password</strong> to set their own.
+        </div>
+        <div id="u-error" style="color:var(--red);font-size:.82rem;min-height:18px;margin-top:8px;"></div>
       `;
       document.getElementById("modal-confirm").textContent = "Create User";
       document.getElementById("modal-confirm").onclick = confirmAddUser;
@@ -667,13 +669,11 @@
       const name  = document.getElementById("u-name").value.trim();
       const unit  = document.getElementById("u-unit").value.trim().replace(/^MC-?/i,"");
       const email = document.getElementById("u-email").value.trim();
-      const pass  = document.getElementById("u-pass").value.trim();
       const role  = document.getElementById("u-role").value;
       const err   = document.getElementById("u-error");
       err.textContent = "";
 
-      if (!name || !unit || !email || !pass) { err.textContent = "All fields are required."; return; }
-      if (pass.length < 6) { err.textContent = "Password must be at least 6 characters."; return; }
+      if (!name || !unit || !email) { err.textContent = "All fields are required."; return; }
 
       // Check unit number not already taken
       const allUsers = await getDocs(collection(db, "users"));
@@ -682,7 +682,8 @@
       if (unitTaken) { err.textContent = "Unit number MC-" + unit + " is already in use."; return; }
 
       try {
-        const cred = await createUserWithEmailAndPassword(secondaryAuth, email, pass);
+        const tempPassword = "Chaverim1!";
+        const cred = await createUserWithEmailAndPassword(secondaryAuth, email, tempPassword);
         await updateProfile(cred.user, { displayName: name });
 
         await setDoc(doc(db, "users", cred.user.uid), {
@@ -694,6 +695,8 @@
           createdBy: currentUser.displayName || currentUser.email,
         });
 
+        // Send password reset so user sets their own password
+        await sendPasswordResetEmail(secondaryAuth, email);
         await signOut(secondaryAuth);
 
         await addLog({
@@ -703,7 +706,7 @@
 
         closeModal();
         loadUsers();
-        showToast("User MC-" + unit + " created!");
+        showToast("MC-" + unit + " created! Reset email sent to " + email);
       } catch(e) {
         if (e.code === "auth/email-already-in-use") err.textContent = "Email already in use.";
         else if (e.code === "auth/invalid-email") err.textContent = "Invalid email address.";
@@ -850,6 +853,121 @@
       });
       unsubs.push(u);
     }
+
+    // ── EXPORT LOG ───────────────────────────────────────────────
+    window.exportLog = async function() {
+      const snap = await getDocs(query(collection(db, "log"), orderBy("timestamp", "desc")));
+      if (snap.empty) { showToast("No log entries to export."); return; }
+
+      const headers = ["Date/Time","Action","Equipment / User","Call #","Location","Member","Items / Notes","By"];
+      const rows = [];
+      snap.forEach(d => {
+        const data = d.data();
+        const ts   = data.timestamp?.toDate();
+        const time = ts ? ts.toLocaleString() : "";
+        rows.push([
+          time,
+          (data.action || "").replace(/_/g," "),
+          data.equipmentName || "",
+          data.callNumber    || "",
+          data.location      || "",
+          data.memberName    || "",
+          data.items         || data.notes || "",
+          data.userName      || "",
+        ]);
+      });
+
+      // Build xlsx binary manually (no library needed)
+      function buildXlsx(headers, rows) {
+        const xmlHeader = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n';
+
+        // Shared strings
+        const allStrings = [];
+        const strIndex = {};
+        function si(val) {
+          const s = String(val ?? "");
+          if (strIndex[s] === undefined) { strIndex[s] = allStrings.length; allStrings.push(s); }
+          return strIndex[s];
+        }
+
+        // Build sheet rows
+        let sheetXml = '';
+        const allRows = [headers, ...rows];
+        allRows.forEach((row, ri) => {
+          sheetXml += `<row r="${ri+1}">`;
+          row.forEach((cell, ci) => {
+            const col = String.fromCharCode(65 + ci);
+            const ref = col + (ri + 1);
+            sheetXml += `<c r="${ref}" t="s"><v>${si(cell)}</v></c>`;
+          });
+          sheetXml += '</row>';
+        });
+
+        const sharedStringsXml = xmlHeader +
+          `<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="${allStrings.length}" uniqueCount="${allStrings.length}">` +
+          allStrings.map(s => `<si><t>${s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</t></si>`).join('') +
+          '</sst>';
+
+        const worksheetXml = xmlHeader +
+          '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
+          '<sheetData>' + sheetXml + '</sheetData></worksheet>';
+
+        const workbookXml = xmlHeader +
+          '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">' +
+          '<sheets><sheet name="Log" sheetId="1" r:id="rId1"/></sheets></workbook>';
+
+        const workbookRels =
+          '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+          '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+          '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>' +
+          '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/>' +
+          '</Relationships>';
+
+        const contentTypes =
+          '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+          '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
+          '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
+          '<Default Extension="xml" ContentType="application/xml"/>' +
+          '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>' +
+          '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' +
+          '<Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>' +
+          '</Types>';
+
+        const relsMain =
+          '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+          '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+          '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>' +
+          '</Relationships>';
+
+        return { workbookXml, worksheetXml, sharedStringsXml, workbookRels, contentTypes, relsMain };
+      }
+
+      const parts = buildXlsx(headers, rows);
+
+      // Use JSZip via CDN to assemble the xlsx
+      const script = document.createElement('script');
+      script.src = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
+      script.onload = async function() {
+        const zip = new JSZip();
+        zip.file('[Content_Types].xml', parts.contentTypes);
+        zip.file('_rels/.rels', parts.relsMain);
+        zip.file('xl/workbook.xml', parts.workbookXml);
+        zip.file('xl/_rels/workbook.xml.rels', parts.workbookRels);
+        zip.file('xl/worksheets/sheet1.xml', parts.worksheetXml);
+        zip.file('xl/sharedStrings.xml', parts.sharedStringsXml);
+
+        const blob = await zip.generateAsync({ type: 'blob', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+        const url  = URL.createObjectURL(blob);
+        const a    = document.createElement('a');
+        const date = new Date().toISOString().slice(0,10);
+        a.href     = url;
+        a.download = 'COMC-Equipment-Log-' + date + '.xlsx';
+        a.click();
+        URL.revokeObjectURL(url);
+        showToast('Log exported!');
+      };
+      document.head.appendChild(script);
+    };
 
     // ── MODAL ────────────────────────────────────────────────────
     window.closeModal = function() {
@@ -1046,7 +1164,7 @@
     <input type="password" id="l-pass" placeholder="Password"
            onkeydown="if(event.key==='Enter') login()">
     <button class="login-btn" onclick="login()">Sign In</button>
-    <button class="forgot-btn" onclick="forgotPassword()">Forgot Password?</button>
+    <button class="forgot-btn" onclick="forgotPassword()">New user or forgot password? Reset here</button>
     <div id="l-error"></div>
   </div>
 </div>
@@ -1127,7 +1245,6 @@
     <div class="toolbar">
       <input type="text" id="eq-search" placeholder="&#128269; Search equipment..." oninput="filterEquipment()">
       <button class="tbtn tbtn-primary admin-only" onclick="showAddEquipment()">+ Add</button>
-      <button class="tbtn tbtn-muted   admin-only" onclick="seedDatabase()">&#127793; Seed</button>
       <button class="tbtn tbtn-danger  admin-only" onclick="resetAllEquipment()">&#8635; Reset</button>
     </div>
     <div id="equipment-list"></div>
@@ -1143,6 +1260,9 @@
 
   <!-- LOG TAB -->
   <div id="tab-log" class="tab-content">
+    <div class="toolbar admin-only" style="margin-bottom:16px;">
+      <button class="tbtn tbtn-muted" onclick="exportLog()" style="width:100%;">&#11015; Export Log as CSV</button>
+    </div>
     <div id="log-list"></div>
   </div>
 </div>
