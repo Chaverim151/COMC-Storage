@@ -420,16 +420,17 @@
     let scannerStream   = null;
     let scannerRAF      = null;
     let scannerMode     = "checkout";
+    let lastScanned     = "";
 
     window.openScanner = function(mode) {
       scannerMode = mode || "checkout";
+      lastScanned = "";
       const modal  = document.getElementById("scanner-modal");
       const status = document.getElementById("scanner-status");
       modal.style.display  = "flex";
       status.textContent   = "Requesting camera…";
       status.style.color   = "var(--muted)";
 
-      // Stop any existing stream first
       if (scannerStream) { scannerStream.getTracks().forEach(t=>t.stop()); scannerStream=null; }
       if (scannerRAF)    { cancelAnimationFrame(scannerRAF); scannerRAF=null; }
 
@@ -437,57 +438,83 @@
       const canvas = document.getElementById("scanner-canvas");
 
       navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } },
+        video: { facingMode: { ideal: "environment" } },
         audio: false
       })
       .then(stream => {
-        scannerStream = stream;
+        scannerStream  = stream;
         video.srcObject = stream;
-        video.setAttribute("playsinline", "true");
-        video.setAttribute("muted", "true");
-        video.play().then(() => {
-          status.textContent = "Point camera at QR code";
-          requestAnimationFrame(scanLoop);
-        }).catch(e => {
-          status.style.color = "var(--red)";
-          status.textContent = "Video error: " + e.message;
-        });
+        video.setAttribute("playsinline","true");
+        video.muted = true;
+
+        // Use onloadedmetadata to start scanning once video size is known
+        video.onloadedmetadata = function() {
+          video.play().then(() => {
+            status.textContent = "📷 Scanning… hold steady";
+            status.style.color = "var(--muted)";
+            tickScan();
+          });
+        };
       })
       .catch(err => {
         status.style.color = "var(--red)";
-        if (err.name === "NotAllowedError") {
-          status.textContent = "Camera permission denied. Allow camera access and try again.";
-        } else if (err.name === "NotFoundError") {
-          status.textContent = "No camera found on this device.";
-        } else {
-          status.textContent = "Camera error: " + err.message;
-        }
+        if (err.name==="NotAllowedError") status.textContent="Camera permission denied.";
+        else if (err.name==="NotFoundError") status.textContent="No camera found.";
+        else status.textContent="Camera error: "+err.message;
       });
 
-      function scanLoop() {
+      function tickScan() {
         if (!scannerStream) return;
-        if (video.readyState >= video.HAVE_ENOUGH_DATA && video.videoWidth > 0) {
-          canvas.width  = video.videoWidth;
-          canvas.height = video.videoHeight;
-          const ctx = canvas.getContext("2d", { willReadFrequently: true });
-          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-          try {
-            const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-            if (window.jsQR) {
-              const code = window.jsQR(imgData.data, imgData.width, imgData.height, {
-                inversionAttempts: "dontInvert"
-              });
-              if (code && code.data) {
-                const status = document.getElementById("scanner-status");
-                status.style.color = "var(--green)";
-                status.textContent = "✓ Scanned: " + code.data;
-                handleQRScan(code.data);
-                return; // stop loop after successful scan
+
+        const vw = video.videoWidth;
+        const vh = video.videoHeight;
+
+        if (!vw || !vh) {
+          // Video not ready yet, try again
+          scannerRAF = requestAnimationFrame(tickScan);
+          return;
+        }
+
+        canvas.width  = vw;
+        canvas.height = vh;
+        const ctx = canvas.getContext("2d", { willReadFrequently: true });
+        ctx.drawImage(video, 0, 0, vw, vh);
+
+        let found = false;
+        try {
+          const imgData = ctx.getImageData(0, 0, vw, vh);
+          if (window.jsQR) {
+            const code = window.jsQR(imgData.data, imgData.width, imgData.height, {
+              inversionAttempts: "attemptBoth"
+            });
+            if (code && code.data && code.data !== lastScanned) {
+              lastScanned = code.data;
+              status.style.color  = "var(--green)";
+              status.textContent  = "✓ " + code.data;
+              found = true;
+              // Vibrate if supported
+              if (navigator.vibrate) navigator.vibrate(100);
+              if (scannerMode === "checkin") {
+                closeScanner();
+                handleCheckinScan(code.data.startsWith("COMC:") ? code.data.replace("COMC:","") : code.data);
+              } else {
+                handleCheckoutScan(code.data.startsWith("COMC:") ? code.data.replace("COMC:","") : code.data);
+                // Reset after 2s to allow next scan
+                setTimeout(() => { lastScanned = ""; status.style.color="var(--muted)"; status.textContent="Scan next item or tap ✕ to close"; }, 2000);
               }
             }
-          } catch(e) { /* ignore canvas errors */ }
+          } else {
+            status.textContent = "⚠ jsQR not loaded";
+            status.style.color = "var(--orange)";
+          }
+        } catch(e) { /* ignore */ }
+
+        if (!found) {
+          scannerRAF = requestAnimationFrame(tickScan);
+        } else if (scannerMode !== "checkin") {
+          // keep scanning for checkout mode
+          setTimeout(() => { if(scannerStream) { scannerRAF=requestAnimationFrame(tickScan); } }, 2000);
         }
-        scannerRAF = requestAnimationFrame(scanLoop);
       }
     };
 
@@ -495,50 +522,14 @@
       if (scannerRAF)    { cancelAnimationFrame(scannerRAF); scannerRAF=null; }
       if (scannerStream) { scannerStream.getTracks().forEach(t=>t.stop()); scannerStream=null; }
       const video = document.getElementById("scanner-video");
-      video.srcObject = null;
+      if (video) { video.srcObject=null; video.onloadedmetadata=null; }
       document.getElementById("scanner-modal").style.display = "none";
     };
 
     function handleQRScan(raw) {
       const eqId = raw.startsWith("COMC:") ? raw.replace("COMC:","") : raw;
-      if (scannerMode === "checkin") {
-        closeScanner();
-        handleCheckinScan(eqId);
-      } else {
-        handleCheckoutScan(eqId);
-        // Resume scanning after 1.5s for next item
-        setTimeout(() => {
-          const status = document.getElementById("scanner-status");
-          if (status && scannerStream) {
-            status.style.color = "var(--muted)";
-            status.textContent = "Scan next item or close";
-            scannerRAF = requestAnimationFrame(function loop() {
-              const video  = document.getElementById("scanner-video");
-              const canvas = document.getElementById("scanner-canvas");
-              if (!scannerStream || !video || !canvas) return;
-              if (video.readyState >= video.HAVE_ENOUGH_DATA && video.videoWidth > 0) {
-                canvas.width  = video.videoWidth;
-                canvas.height = video.videoHeight;
-                const ctx = canvas.getContext("2d", { willReadFrequently: true });
-                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-                try {
-                  const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-                  if (window.jsQR) {
-                    const code = window.jsQR(imgData.data, imgData.width, imgData.height, { inversionAttempts:"dontInvert" });
-                    if (code && code.data && code.data !== raw) {
-                      status.style.color = "var(--green)";
-                      status.textContent = "✓ Scanned: " + code.data;
-                      handleQRScan(code.data);
-                      return;
-                    }
-                  }
-                } catch(e) {}
-              }
-              scannerRAF = requestAnimationFrame(loop);
-            });
-          }
-        }, 1500);
-      }
+      if (scannerMode==="checkin") handleCheckinScan(eqId);
+      else handleCheckoutScan(eqId);
     }
 
     function handleCheckoutScan(eqId) {
@@ -1307,8 +1298,8 @@
       <button class="scanner-close" onclick="closeScanner()">&#10005;</button>
     </div>
     <div class="scanner-video-wrap">
-      <video id="scanner-video" playsinline autoplay muted></video>
-      <canvas id="scanner-canvas" style="display:none"></canvas>
+      <video id="scanner-video" playsinline muted></video>
+      <canvas id="scanner-canvas" style="display:none;position:absolute;top:0;left:0;width:100%;opacity:0;pointer-events:none;"></canvas>
       <div class="scanner-frame"><div class="scanner-box"></div></div>
     </div>
     <div id="scanner-status">Initializing camera…</div>
