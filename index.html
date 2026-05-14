@@ -190,6 +190,7 @@
         snap.forEach(d => { activeCallsMap[d.id] = d.data(); });
         renderEquipmentList();
         renderActiveCalls();
+        renderCheckinCalls();
         populateCheckoutSelector();
       });
 
@@ -258,9 +259,10 @@
         equipmentMap[a].name.localeCompare(equipmentMap[b].name)
       ).forEach(id => {
         const avail = getAvail(id);
-        const opt = document.createElement("option");
-        opt.value = id;
-        opt.textContent = equipmentMap[id].name + " (" + avail + " avail)";
+        const d     = equipmentMap[id];
+        const opt   = document.createElement("option");
+        opt.value   = id;
+        opt.textContent = (d.eqId ? d.eqId + " — " : "") + d.name + " (" + avail + " avail)";
         opt.disabled = avail <= 0;
         sel.appendChild(opt);
       });
@@ -275,12 +277,16 @@
       const avail = getAvail(id);
       if (qty > avail) { alert("Only " + avail + " available."); return; }
 
-      // Check if already added — update qty instead
       const existing = checkoutItems.find(i => i.equipmentId === id);
       if (existing) {
         existing.qty += qty;
       } else {
-        checkoutItems.push({ equipmentId: id, name: equipmentMap[id].name, qty });
+        checkoutItems.push({
+          equipmentId: id,
+          name: equipmentMap[id].name,
+          eqId: equipmentMap[id].eqId || "",
+          qty,
+        });
       }
       sel.value = "";
       document.getElementById("co-qty").value = 1;
@@ -374,6 +380,7 @@
             if (d.data().status === "open") activeCallsMap[d.id] = d.data();
           });
           renderActiveCalls();
+          renderCheckinCalls();
           renderEquipmentList();
           populateCheckoutSelector();
         }
@@ -394,7 +401,10 @@
         const ts   = call.openedAt?.toDate();
         const time = ts ? ts.toLocaleString() : "—";
         const itemsList = (call.items || []).map(i =>
-          `<div class="call-item"><span class="call-item-name">${i.name}</span><span class="call-item-qty">x${i.qty}</span></div>`
+          `<div class="call-item">
+            <span class="call-item-name">${i.name}${i.eqId ? '<span class="call-item-eqid">'+i.eqId+'</span>' : ''}</span>
+            <span class="call-item-qty">x${i.qty}</span>
+          </div>`
         ).join("");
 
         const card = document.createElement("div");
@@ -547,20 +557,18 @@
 
     // ── EQUIPMENT ID GENERATION ──────────────────────────────────
     function generateEquipmentId(name) {
-      const prefixMap = {
-        "ac unit": "AC", "ac window": "ACW", "fan": "FAN",
-        "large heater": "HTR-L", "small heater": "HTR-S", "heater": "HTR",
-        "ez spare": "EZS", "spare": "SPR",
-      };
       const lower = name.toLowerCase();
       let prefix = "EQ";
-      for (const [key, val] of Object.entries(prefixMap)) {
-        if (lower.includes(key)) { prefix = val; break; }
-      }
+      if (lower.includes("heater"))        prefix = "Heater";
+      else if (lower.includes("ac"))        prefix = "AC";
+      else if (lower.includes("fan"))       prefix = "Fan";
+      else if (lower.includes("ez spare"))  prefix = "EZ Spare";
+      else if (lower.includes("spare"))     prefix = "Spare";
+
       // Find next available number for this prefix
       const existing = Object.values(equipmentMap)
         .map(d => d.eqId || "")
-        .filter(id => id.startsWith(prefix + "-"))
+        .filter(id => id.toLowerCase().startsWith(prefix.toLowerCase() + "-"))
         .map(id => parseInt(id.split("-").pop()) || 0);
       const next = existing.length > 0 ? Math.max(...existing) + 1 : 1;
       return prefix + "-" + next;
@@ -569,9 +577,12 @@
     // ── QR SCANNER ───────────────────────────────────────────────
     let scannerStream = null;
     let scannerInterval = null;
+    let scannerMode = "checkout";
 
-    window.openScanner = function() {
+    window.openScanner = function(mode) {
+      scannerMode = mode || "checkout";
       document.getElementById("scanner-modal").style.display = "flex";
+      document.getElementById("scanner-status").textContent = "Starting camera...";
       startScanner();
     };
 
@@ -581,11 +592,10 @@
     };
 
     function startScanner() {
-      const video = document.getElementById("scanner-video");
+      const video  = document.getElementById("scanner-video");
       const canvas = document.getElementById("scanner-canvas");
-      const ctx = canvas.getContext("2d");
+      const ctx    = canvas.getContext("2d");
       const status = document.getElementById("scanner-status");
-      status.textContent = "Starting camera...";
 
       navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } })
         .then(stream => {
@@ -593,27 +603,20 @@
           video.srcObject = stream;
           video.play();
           status.textContent = "Point camera at QR code";
-
           scannerInterval = setInterval(() => {
             if (video.readyState === video.HAVE_ENOUGH_DATA) {
               canvas.width  = video.videoWidth;
               canvas.height = video.videoHeight;
               ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
               const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-
-              // Use jsQR if loaded
               if (window.jsQR) {
                 const code = jsQR(imageData.data, imageData.width, imageData.height);
-                if (code) {
-                  handleQRScan(code.data);
-                }
+                if (code) handleQRScan(code.data);
               }
             }
           }, 200);
         })
-        .catch(err => {
-          status.textContent = "Camera error: " + err.message;
-        });
+        .catch(err => { status.textContent = "Camera error: " + err.message; });
     }
 
     function stopScanner() {
@@ -622,32 +625,104 @@
     }
 
     function handleQRScan(data) {
-      // QR codes contain the eqId e.g. "COMC:AC-1"
       const eqId = data.startsWith("COMC:") ? data.replace("COMC:","") : data;
-      // Find equipment by eqId
-      const match = Object.entries(equipmentMap).find(([,d]) => d.eqId === eqId);
-      if (!match) {
-        document.getElementById("scanner-status").textContent = "Unknown equipment: " + eqId;
-        return;
-      }
-      const [firestoreId, equipData] = match;
-      const avail = getAvail(firestoreId);
-      if (avail <= 0) {
-        document.getElementById("scanner-status").textContent = equipData.name + " is OUT — none available!";
-        return;
-      }
       stopScanner();
       document.getElementById("scanner-modal").style.display = "none";
+      if (scannerMode === "checkin") handleCheckinScan(eqId);
+      else handleCheckoutScan(eqId);
+    }
 
-      // Add to checkout
+    function handleCheckoutScan(eqId) {
+      const match = Object.entries(equipmentMap).find(([,d]) => d.eqId === eqId);
+      if (!match) { showToast("Unknown: " + eqId); return; }
+      const [firestoreId, equipData] = match;
+      if (getAvail(firestoreId) <= 0) { showToast(equipData.name + " is OUT!"); return; }
       const existing = checkoutItems.find(i => i.equipmentId === firestoreId);
-      if (existing) {
-        existing.qty += 1;
-      } else {
-        checkoutItems.push({ equipmentId: firestoreId, name: equipData.name, eqId: equipData.eqId, qty: 1 });
-      }
+      if (existing) existing.qty += 1;
+      else checkoutItems.push({ equipmentId: firestoreId, name: equipData.name, eqId: equipData.eqId, qty: 1 });
       renderCheckoutItems();
       showToast("Added: " + equipData.name + " (" + eqId + ")");
+    }
+
+    function handleCheckinScan(eqId) {
+      const matches = Object.entries(activeCallsMap).filter(([,call]) =>
+        (call.items || []).some(i => i.eqId === eqId)
+      );
+      if (matches.length === 0) { showToast(eqId + " not found in any open call."); return; }
+      const [callId, call] = matches[0];
+      if (confirm("Return " + eqId + " from Call #" + call.callNumber + "?")) {
+        doReturnItem(callId, call, eqId);
+      }
+    }
+
+    window.returnItemFromCall = async function(callId, eqId) {
+      const call = activeCallsMap[callId];
+      if (!call) return;
+      if (confirm("Return " + (eqId || "item") + " from Call #" + call.callNumber + "?")) {
+        await doReturnItem(callId, call, eqId);
+      }
+    };
+
+    async function doReturnItem(callId, call, eqId) {
+      const returned  = (call.items||[]).find(i => i.eqId === eqId);
+      const remaining = (call.items||[]).filter(i => i.eqId !== eqId);
+      if (remaining.length === 0) {
+        await updateDoc(doc(db, "calls", callId), {
+          status: "closed", closedAt: serverTimestamp(),
+          closedBy: currentUser.displayName || currentUser.email,
+        });
+      } else {
+        await updateDoc(doc(db, "calls", callId), { items: remaining });
+      }
+      await addLog({
+        action: "CHECK_IN", callNumber: call.callNumber,
+        equipmentName: returned ? returned.name + " (" + eqId + ")" : eqId,
+        userId: currentUser.uid,
+        userName: currentUser.displayName || currentUser.email,
+      });
+      showToast((returned ? returned.name : eqId) + " checked in!");
+    }
+
+    // ── CHECKIN TAB ───────────────────────────────────────────────
+    function renderCheckinCalls() {
+      const container = document.getElementById("checkin-calls-list");
+      if (!container) return;
+      container.innerHTML = "";
+      const calls = Object.entries(activeCallsMap);
+      if (calls.length === 0) {
+        container.innerHTML = '<div class="empty">&#10003; No open calls. All equipment is in.</div>';
+        return;
+      }
+      calls.sort((a,b) => (b[1].openedAt?.seconds||0) - (a[1].openedAt?.seconds||0));
+      calls.forEach(([id, call]) => {
+        const ts   = call.openedAt?.toDate();
+        const time = ts ? ts.toLocaleString() : "—";
+        const card = document.createElement("div");
+        card.className = "call-card";
+        card.style.borderLeftColor = "var(--sky)";
+        card.innerHTML = `
+          <div class="call-header">
+            <div class="call-num">Call #${call.callNumber}</div>
+            <div class="call-status-badge" style="background:rgba(124,200,232,.2);color:var(--sky);">OPEN</div>
+          </div>
+          <div class="call-meta-row">
+            ${call.location   ? `<span>&#128205; ${call.location}</span>` : ""}
+            ${call.memberName ? `<span>&#128100; ${call.memberName}${call.memberUnit?' (MC-'+call.memberUnit+')':''}</span>` : ""}
+          </div>
+          <div class="call-items-wrap">
+            <div class="call-items-label">Tap item to return:</div>
+            ${(call.items||[]).map(i => `
+              <div class="call-item checkin-item" onclick="returnItemFromCall('${id}','${i.eqId||""}')">
+                <span class="call-item-name">${i.name}${i.eqId?'<span class="call-item-eqid"> '+i.eqId+'</span>':''}</span>
+                <span class="checkin-return-tag">&#10003; Return</span>
+              </div>
+            `).join("")}
+          </div>
+          <div class="call-footer-meta">${time}</div>
+          <button class="close-call-btn" style="width:100%;margin-top:8px;" onclick="closeCall('${id}')">&#10003; Return All &amp; Close Call</button>
+        `;
+        container.appendChild(card);
+      });
     }
 
     // ── QR CODE GENERATION (for printing) ────────────────────────
@@ -804,6 +879,84 @@
       await addLog({ action: "DELETED", equipmentName: name,
         userId: currentUser.uid, userName: currentUser.displayName || currentUser.email });
       closeModal();
+    };
+
+    window.bulkGenerateIds = async function() {
+      const missing = Object.entries(equipmentMap).filter(([,d]) => !d.eqId);
+      if (missing.length === 0) { showToast("All equipment already has IDs!"); return; }
+      if (!confirm("Auto-generate IDs for " + missing.length + " equipment items that are missing one?")) return;
+
+      // Build a temporary map including IDs we're about to assign
+      // so numbering doesn't collide within the same batch
+      const tempAssigned = {}; // prefix -> next number
+
+      function getNextNum(prefix) {
+        // Count existing IDs in DB with this prefix
+        const existingNums = Object.values(equipmentMap)
+          .map(d => d.eqId || "")
+          .filter(id => id.toLowerCase().startsWith(prefix.toLowerCase() + "-"))
+          .map(id => parseInt(id.split("-").pop()) || 0);
+        // Also count what we've already assigned in this batch
+        const batchNums = Object.entries(tempAssigned)
+          .filter(([k]) => k === prefix)
+          .map(([,v]) => v);
+        const allNums = [...existingNums, ...batchNums];
+        const next = allNums.length > 0 ? Math.max(...allNums) + 1 : 1;
+        tempAssigned[prefix] = (tempAssigned[prefix] || 0);
+        return next;
+      }
+
+      function getPrefixForName(name) {
+        const lower = name.toLowerCase();
+        if (lower.includes("heater"))       return "Heater";
+        if (lower.includes("ac"))           return "AC";
+        if (lower.includes("fan"))          return "Fan";
+        if (lower.includes("ez spare"))     return "EZ Spare";
+        if (lower.includes("spare"))        return "Spare";
+        return "EQ";
+      }
+
+      // Sort by name for consistent numbering
+      missing.sort((a,b) => a[1].name.localeCompare(b[1].name));
+
+      // Track assigned IDs to avoid duplicates within batch
+      const assignedIds = new Set(
+        Object.values(equipmentMap).map(d => d.eqId).filter(Boolean)
+      );
+
+      const updates = [];
+      for (const [id, data] of missing) {
+        const prefix = getPrefixForName(data.name);
+        let num = getNextNum(prefix);
+        let newId = prefix + "-" + num;
+        // Ensure uniqueness
+        while (assignedIds.has(newId)) {
+          num++;
+          newId = prefix + "-" + num;
+        }
+        assignedIds.add(newId);
+        if (!tempAssigned[prefix]) tempAssigned[prefix] = 0;
+        tempAssigned[prefix] = num;
+        updates.push({ id, name: data.name, newId });
+      }
+
+      // Show preview before saving
+      const preview = updates.map(u => u.name + " → " + u.newId).join("\n");
+      if (!confirm("Assign these IDs?\n\n" + preview)) return;
+
+      // Write to Firestore
+      await Promise.all(updates.map(u =>
+        updateDoc(doc(db, "equipment", u.id), { eqId: u.newId })
+      ));
+
+      await addLog({
+        action: "IDS_GENERATED",
+        equipmentName: updates.length + " items assigned IDs",
+        userId: currentUser.uid,
+        userName: currentUser.displayName || currentUser.email,
+      });
+
+      showToast(updates.length + " IDs generated!");
     };
 
     window.seedDatabase = async function() {
@@ -1331,6 +1484,59 @@
     .user-btn { flex:1; padding:8px; background:var(--surface2); border:1px solid var(--border); color:var(--text); border-radius:6px; font-family:'Barlow Condensed',sans-serif; font-size:.82rem; font-weight:600; letter-spacing:.04em; text-transform:uppercase; cursor:pointer; }
     .user-btn:active { opacity:.7; }
 
+    /* EQUIPMENT ID BADGE */
+    .eq-id-badge {
+      font-family:'Barlow Condensed',sans-serif;
+      font-size:.72rem; font-weight:700;
+      color:var(--steel); letter-spacing:.08em;
+      margin-top:2px;
+    }
+    .btn-qr { background:rgba(124,200,232,.15); color:var(--sky); }
+
+    .checkin-item { cursor:pointer; transition:background .15s; }
+    .checkin-item:active { background:rgba(72,199,142,.1); }
+    .checkin-return-tag {
+      font-family:'Barlow Condensed',sans-serif;
+      font-size:.82rem; font-weight:700;
+      color:var(--green); flex-shrink:0;
+    }
+
+    /* SCAN BUTTON */
+    .scan-btn {
+      width:100%; padding:13px;
+      background:linear-gradient(135deg,var(--steel),var(--sky-dim));
+      color:#fff; border:none; border-radius:8px;
+      font-family:'Barlow Condensed',sans-serif;
+      font-size:1.05rem; font-weight:700;
+      letter-spacing:.06em; text-transform:uppercase;
+      cursor:pointer; margin-bottom:8px;
+      -webkit-tap-highlight-color:transparent;
+    }
+    .scan-btn:active { opacity:.85; }
+
+    .scan-divider {
+      display:flex; align-items:center; gap:10px;
+      margin:8px 0 12px; color:var(--muted); font-size:.78rem;
+    }
+    .scan-divider::before, .scan-divider::after {
+      content:''; flex:1; height:1px; background:var(--border);
+    }
+
+    /* STAGED ITEM EQ ID */
+    .staged-eqid {
+      font-family:'Barlow Condensed',sans-serif;
+      font-size:.75rem; color:var(--sky);
+      font-weight:700; letter-spacing:.06em;
+      margin-left:6px;
+    }
+
+    /* CALL ITEM EQ ID */
+    .call-item-eqid {
+      font-family:'Barlow Condensed',sans-serif;
+      font-size:.72rem; color:var(--muted);
+      margin-left:6px;
+    }
+
     /* TOAST */
     #toast { position:fixed; bottom:24px; left:50%; transform:translateX(-50%) translateY(80px); background:var(--steel); color:#fff; padding:10px 20px; border-radius:20px; font-size:.88rem; font-weight:600; opacity:0; transition:opacity .3s,transform .3s; z-index:9999; pointer-events:none; }
     #toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
@@ -1375,6 +1581,7 @@
 
   <div class="tabs">
     <div class="tab active" data-tab="checkout"  onclick="switchTab('checkout',this)">&#128229; Check Out</div>
+    <div class="tab"        data-tab="checkin"   onclick="switchTab('checkin',this)">&#128228; Check In</div>
     <div class="tab"        data-tab="inuse"     onclick="switchTab('inuse',this)">&#128642; In Use</div>
     <div class="tab"        data-tab="inventory" onclick="switchTab('inventory',this)">&#128230; Inventory</div>
     <div class="tab admin-only" data-tab="users" onclick="switchTab('users',this)">&#128101; Users</div>
@@ -1429,6 +1636,16 @@
     <button class="submit-checkout-btn" onclick="submitCheckout()">&#128229; Open Call &amp; Check Out</button>
   </div>
 
+  <!-- CHECK IN TAB -->
+  <div id="tab-checkin" class="tab-content">
+    <div class="co-form">
+      <h3>&#128247; Scan to Check In</h3>
+      <button class="scan-btn" onclick="openScanner('checkin')">&#128247; Scan QR Code</button>
+      <div class="scan-divider"><span>or select from open calls</span></div>
+    </div>
+    <div id="checkin-calls-list"></div>
+  </div>
+
   <!-- IN USE TAB -->
   <div id="tab-inuse" class="tab-content">
     <div id="active-calls-list"></div>
@@ -1439,6 +1656,7 @@
     <div class="toolbar">
       <input type="text" id="eq-search" placeholder="&#128269; Search equipment..." oninput="filterEquipment()">
       <button class="tbtn tbtn-primary admin-only" onclick="showAddEquipment()">+ Add</button>
+      <button class="tbtn tbtn-muted   admin-only" onclick="bulkGenerateIds()">&#9638; Generate IDs</button>
       <button class="tbtn tbtn-danger  admin-only" onclick="resetAllEquipment()">&#8635; Reset</button>
     </div>
     <div id="equipment-list"></div>
