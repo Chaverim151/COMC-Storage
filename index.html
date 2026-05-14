@@ -223,7 +223,10 @@
         card.className = "eq-card";
         card.innerHTML = `
           <div class="eq-header">
-            <div class="eq-name">${d.name}</div>
+            <div>
+              <div class="eq-name">${d.name}</div>
+              ${d.eqId ? `<div class="eq-id-badge">${d.eqId}</div>` : ''}
+            </div>
             <div class="eq-badge ${statusClass}">${avail === 0 ? "OUT" : avail + " avail"}</div>
           </div>
           <div class="eq-bar-wrap"><div class="eq-bar" style="width:${pct}%"></div></div>
@@ -234,7 +237,8 @@
           </div>
           <div class="eq-actions admin-only" style="display:${currentRole==='admin'?'flex':'none'}">
             <button class="eq-btn btn-broken" onclick="markBroken('${id}','${d.name}')" ${avail<=0?'disabled':''}>&#128683; Broken</button>
-            <button class="eq-btn btn-edit"   onclick="editEquipment('${id}')">&#9998; Edit</button>
+            ${d.eqId ? `<button class="eq-btn btn-qr" onclick="showQRCode('${d.eqId}','${d.name}')">&#9638; QR</button>` : ''}
+            <button class="eq-btn btn-edit" onclick="editEquipment('${id}')">&#9998; Edit</button>
           </div>
         `;
         container.appendChild(card);
@@ -294,7 +298,7 @@
         const row = document.createElement("div");
         row.className = "staged-item";
         row.innerHTML = `
-          <div class="staged-name">${item.name}</div>
+          <div class="staged-name">${item.name}${item.eqId ? ' <span class="staged-eqid">'+item.eqId+'</span>' : ''}</div>
           <div class="staged-qty">x${item.qty}</div>
           <button class="staged-remove" onclick="removeCheckoutItem(${i})">&#10005;</button>
         `;
@@ -541,6 +545,175 @@
       showToast(name + " marked broken.");
     }
 
+    // ── EQUIPMENT ID GENERATION ──────────────────────────────────
+    function generateEquipmentId(name) {
+      const prefixMap = {
+        "ac unit": "AC", "ac window": "ACW", "fan": "FAN",
+        "large heater": "HTR-L", "small heater": "HTR-S", "heater": "HTR",
+        "ez spare": "EZS", "spare": "SPR",
+      };
+      const lower = name.toLowerCase();
+      let prefix = "EQ";
+      for (const [key, val] of Object.entries(prefixMap)) {
+        if (lower.includes(key)) { prefix = val; break; }
+      }
+      // Find next available number for this prefix
+      const existing = Object.values(equipmentMap)
+        .map(d => d.eqId || "")
+        .filter(id => id.startsWith(prefix + "-"))
+        .map(id => parseInt(id.split("-").pop()) || 0);
+      const next = existing.length > 0 ? Math.max(...existing) + 1 : 1;
+      return prefix + "-" + next;
+    }
+
+    // ── QR SCANNER ───────────────────────────────────────────────
+    let scannerStream = null;
+    let scannerInterval = null;
+
+    window.openScanner = function() {
+      document.getElementById("scanner-modal").style.display = "flex";
+      startScanner();
+    };
+
+    window.closeScanner = function() {
+      stopScanner();
+      document.getElementById("scanner-modal").style.display = "none";
+    };
+
+    function startScanner() {
+      const video = document.getElementById("scanner-video");
+      const canvas = document.getElementById("scanner-canvas");
+      const ctx = canvas.getContext("2d");
+      const status = document.getElementById("scanner-status");
+      status.textContent = "Starting camera...";
+
+      navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } })
+        .then(stream => {
+          scannerStream = stream;
+          video.srcObject = stream;
+          video.play();
+          status.textContent = "Point camera at QR code";
+
+          scannerInterval = setInterval(() => {
+            if (video.readyState === video.HAVE_ENOUGH_DATA) {
+              canvas.width  = video.videoWidth;
+              canvas.height = video.videoHeight;
+              ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+              const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+
+              // Use jsQR if loaded
+              if (window.jsQR) {
+                const code = jsQR(imageData.data, imageData.width, imageData.height);
+                if (code) {
+                  handleQRScan(code.data);
+                }
+              }
+            }
+          }, 200);
+        })
+        .catch(err => {
+          status.textContent = "Camera error: " + err.message;
+        });
+    }
+
+    function stopScanner() {
+      if (scannerInterval) { clearInterval(scannerInterval); scannerInterval = null; }
+      if (scannerStream)   { scannerStream.getTracks().forEach(t => t.stop()); scannerStream = null; }
+    }
+
+    function handleQRScan(data) {
+      // QR codes contain the eqId e.g. "COMC:AC-1"
+      const eqId = data.startsWith("COMC:") ? data.replace("COMC:","") : data;
+      // Find equipment by eqId
+      const match = Object.entries(equipmentMap).find(([,d]) => d.eqId === eqId);
+      if (!match) {
+        document.getElementById("scanner-status").textContent = "Unknown equipment: " + eqId;
+        return;
+      }
+      const [firestoreId, equipData] = match;
+      const avail = getAvail(firestoreId);
+      if (avail <= 0) {
+        document.getElementById("scanner-status").textContent = equipData.name + " is OUT — none available!";
+        return;
+      }
+      stopScanner();
+      document.getElementById("scanner-modal").style.display = "none";
+
+      // Add to checkout
+      const existing = checkoutItems.find(i => i.equipmentId === firestoreId);
+      if (existing) {
+        existing.qty += 1;
+      } else {
+        checkoutItems.push({ equipmentId: firestoreId, name: equipData.name, eqId: equipData.eqId, qty: 1 });
+      }
+      renderCheckoutItems();
+      showToast("Added: " + equipData.name + " (" + eqId + ")");
+    }
+
+    // ── QR CODE GENERATION (for printing) ────────────────────────
+    window.showQRCode = function(eqId, name) {
+      const modal = document.getElementById("modal");
+      document.getElementById("modal-title").textContent = "QR Code: " + eqId;
+      document.getElementById("modal-body").innerHTML = `
+        <div style="text-align:center;">
+          <div id="qr-container" style="background:#fff;padding:16px;border-radius:8px;display:inline-block;margin-bottom:12px;"></div>
+          <div style="font-family:'Barlow Condensed',sans-serif;font-size:1.1rem;font-weight:700;color:var(--text);margin-bottom:4px;">${eqId}</div>
+          <div style="font-size:.82rem;color:var(--muted);margin-bottom:16px;">${name}</div>
+          <button class="tbtn tbtn-muted" onclick="printQR('${eqId}','${name}')" style="width:100%;">&#128438; Print Label</button>
+        </div>
+      `;
+      document.getElementById("modal-confirm").style.display = "none";
+      modal.style.display = "flex";
+
+      // Load QRCode.js and render
+      if (!window.QRCode) {
+        const s = document.createElement("script");
+        s.src = "https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js";
+        s.onload = () => renderQR(eqId);
+        document.head.appendChild(s);
+      } else {
+        renderQR(eqId);
+      }
+    };
+
+    function renderQR(eqId) {
+      document.getElementById("qr-container").innerHTML = "";
+      new QRCode(document.getElementById("qr-container"), {
+        text: "COMC:" + eqId,
+        width: 180, height: 180,
+        colorDark: "#000000", colorLight: "#ffffff",
+      });
+    }
+
+    window.printQR = function(eqId, name) {
+      const win = window.open("", "_blank");
+      win.document.write(`
+        <html><head><title>QR Label</title>
+        <style>
+          body { font-family: Arial, sans-serif; text-align: center; padding: 20px; }
+          .label { display: inline-block; border: 2px solid #000; padding: 16px; border-radius: 8px; }
+          h2 { margin: 8px 0 4px; font-size: 1.4rem; }
+          p  { margin: 0; font-size: .9rem; color: #555; }
+        </style>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"><\/script>
+        </head><body>
+        <div class="label">
+          <div id="qr"></div>
+          <h2>${eqId}</h2>
+          <p>${name}</p>
+        </div>
+        <script>
+          new QRCode(document.getElementById("qr"), {
+            text: "COMC:${eqId}", width:160, height:160,
+            colorDark:"#000000", colorLight:"#ffffff"
+          });
+          setTimeout(() => window.print(), 800);
+        <\/script>
+        </body></html>
+      `);
+      win.document.close();
+    };
+
     // ── ADMIN: ADD/EDIT/DELETE ────────────────────────────────────
     window.showAddEquipment = function() {
       const modal = document.getElementById("modal");
@@ -550,23 +723,37 @@
       title.textContent = "Add Equipment";
       body.innerHTML = `
         <div class="form-group"><label>Name</label>
-          <input id="m-name" type="text" placeholder="e.g. Large Heater"></div>
+          <input id="m-name" type="text" placeholder="e.g. Large Heater"
+            oninput="autoFillEqId()"></div>
+        <div class="form-group"><label>Equipment ID</label>
+          <input id="m-eqid" type="text" placeholder="Auto-generated (editable)"></div>
         <div class="form-group"><label>Total Quantity</label>
           <input id="m-total" type="number" value="1" min="1"></div>
       `;
       btn.textContent = "Add";
       btn.onclick = confirmAdd;
+      document.getElementById("modal-confirm").style.display = "";
       modal.style.display = "flex";
+    };
+
+    window.autoFillEqId = function() {
+      const name = document.getElementById("m-name")?.value.trim();
+      if (name) document.getElementById("m-eqid").value = generateEquipmentId(name);
     };
 
     async function confirmAdd() {
       const name  = document.getElementById("m-name")?.value.trim();
+      const eqId  = document.getElementById("m-eqid")?.value.trim().toUpperCase();
       const total = parseInt(document.getElementById("m-total")?.value) || 1;
       if (!name) { alert("Name required."); return; }
+      if (!eqId) { alert("Equipment ID required."); return; }
+      // Check ID not already used
+      const idTaken = Object.values(equipmentMap).some(d => d.eqId === eqId);
+      if (idTaken) { alert("Equipment ID " + eqId + " is already in use."); return; }
       await addDoc(collection(db, "equipment"), {
-        name, totalQty: total, brokenQty: 0, createdAt: serverTimestamp(),
+        name, eqId, totalQty: total, brokenQty: 0, createdAt: serverTimestamp(),
       });
-      await addLog({ action: "ADDED", equipmentName: name, qty: total,
+      await addLog({ action: "ADDED", equipmentName: name + " (" + eqId + ")", qty: total,
         userId: currentUser.uid, userName: currentUser.displayName || currentUser.email });
       closeModal();
     }
@@ -582,24 +769,29 @@
       body.innerHTML = `
         <div class="form-group"><label>Name</label>
           <input id="m-name" type="text" value="${d.name}"></div>
+        <div class="form-group"><label>Equipment ID</label>
+          <input id="m-eqid" type="text" value="${d.eqId || ''}"></div>
         <div class="form-group"><label>Total Quantity</label>
           <input id="m-total" type="number" value="${d.totalQty}"></div>
         <div class="form-group"><label>Broken Quantity</label>
           <input id="m-broken" type="number" value="${d.brokenQty||0}"></div>
+        ${d.eqId ? `<button class="tbtn tbtn-muted" style="width:100%;margin-bottom:8px;" onclick="showQRCode('${d.eqId}','${d.name}')">&#9638; View / Print QR Code</button>` : ''}
         <button class="delete-btn" onclick="deleteEquipment('${id}')">&#128465; Delete</button>
       `;
       btn.textContent = "Save";
       btn.onclick = () => confirmEdit(id);
+      document.getElementById("modal-confirm").style.display = "";
       modal.style.display = "flex";
     };
 
     async function confirmEdit(id) {
       const name   = document.getElementById("m-name")?.value.trim();
+      const eqId   = document.getElementById("m-eqid")?.value.trim().toUpperCase();
       const total  = parseInt(document.getElementById("m-total")?.value);
       const broken = parseInt(document.getElementById("m-broken")?.value) || 0;
       if (!name) { alert("Name required."); return; }
-      await updateDoc(doc(db, "equipment", id), { name, totalQty: total, brokenQty: broken });
-      await addLog({ action: "EDITED", equipmentName: name,
+      await updateDoc(doc(db, "equipment", id), { name, eqId, totalQty: total, brokenQty: broken });
+      await addLog({ action: "EDITED", equipmentName: name + " (" + eqId + ")",
         userId: currentUser.uid, userName: currentUser.displayName || currentUser.email });
       closeModal();
     }
@@ -1216,6 +1408,8 @@
 
     <div class="co-form">
       <h3>&#128230; Add Equipment to Call</h3>
+      <button class="scan-btn" onclick="openScanner()">&#128247; Scan QR Code</button>
+      <div class="scan-divider"><span>or select manually</span></div>
       <div class="add-item-row">
         <div class="form-group">
           <label>Equipment</label>
@@ -1290,6 +1484,27 @@
     document.getElementById("tab-" + name).classList.add("active");
   }
 </script>
+
+<!-- SCANNER MODAL -->
+<div id="scanner-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.9);z-index:1000;flex-direction:column;align-items:center;justify-content:center;padding:16px;">
+  <div style="width:100%;max-width:400px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+      <div style="font-family:'Barlow Condensed',sans-serif;font-size:1.1rem;font-weight:700;color:var(--sky);letter-spacing:.06em;text-transform:uppercase;">Scan QR Code</div>
+      <button onclick="closeScanner()" style="background:none;border:none;color:#fff;font-size:1.5rem;cursor:pointer;padding:0 4px;">&#10005;</button>
+    </div>
+    <div style="position:relative;width:100%;border-radius:12px;overflow:hidden;background:#000;">
+      <video id="scanner-video" style="width:100%;display:block;" playsinline></video>
+      <canvas id="scanner-canvas" style="display:none;"></canvas>
+      <!-- Scan frame overlay -->
+      <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none;">
+        <div style="width:200px;height:200px;border:3px solid var(--sky);border-radius:12px;box-shadow:0 0 0 9999px rgba(0,0,0,.4);"></div>
+      </div>
+    </div>
+    <div id="scanner-status" style="text-align:center;color:var(--muted);font-size:.85rem;margin-top:12px;padding:8px;"></div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.min.js"></script>
 
 </body>
 </html>
