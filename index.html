@@ -5,8 +5,22 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
   <title>COMC Equipment Manager</title>
   <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800&family=Barlow:wght@400;500;600&display=swap" rel="stylesheet">
-  <!-- jsQR must load before the module script uses it -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.min.js"></script>
+  <!-- jsQR with fallback CDNs -->
+  <script>
+    function loadScript(urls, idx) {
+      if (idx >= urls.length) { console.error("All jsQR CDNs failed"); return; }
+      var s = document.createElement("script");
+      s.src = urls[idx];
+      s.onload  = function() { console.log("jsQR loaded from: " + urls[idx]); };
+      s.onerror = function() { console.warn("jsQR CDN failed: " + urls[idx]); loadScript(urls, idx+1); };
+      document.head.appendChild(s);
+    }
+    loadScript([
+      "https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js",
+      "https://unpkg.com/jsqr@1.4.0/dist/jsQR.js",
+      "https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.min.js"
+    ], 0);
+  </script>
 
   <script type="module">
     import { initializeApp }
@@ -450,9 +464,28 @@
         // Use onloadedmetadata to start scanning once video size is known
         video.onloadedmetadata = function() {
           video.play().then(() => {
-            status.textContent = "📷 Scanning… hold steady";
-            status.style.color = "var(--muted)";
-            tickScan();
+            // Check if jsQR loaded, wait a moment if not
+            if (!window.jsQR) {
+              status.textContent = "Loading scanner library…";
+              let attempts = 0;
+              const waitForJsQR = setInterval(() => {
+                attempts++;
+                if (window.jsQR) {
+                  clearInterval(waitForJsQR);
+                  status.textContent = "📷 Scanning… hold steady";
+                  status.style.color = "var(--muted)";
+                  tickScan();
+                } else if (attempts > 20) {
+                  clearInterval(waitForJsQR);
+                  status.style.color = "var(--red)";
+                  status.innerHTML = "Scanner library failed to load.<br><small>Try refreshing the page.</small>";
+                }
+              }, 200);
+            } else {
+              status.textContent = "📷 Scanning… hold steady";
+              status.style.color = "var(--muted)";
+              tickScan();
+            }
           });
         };
       })
