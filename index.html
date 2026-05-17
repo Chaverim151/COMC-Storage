@@ -137,10 +137,16 @@
     // ── ID GENERATION ────────────────────────────────────────────
     function getPrefix(name) {
       const l = name.toLowerCase();
-      if (l.includes("heater"))    return "Heater";
+      if (l.includes("12k") || l.includes("12,000")) return "AC-12K";
+      if (l.includes("9k")  || l.includes("9,000"))  return "AC-9K";
+      if (l.includes("6k")  || l.includes("6,000"))  return "AC-6K";
+      if (l.includes("5k")  || l.includes("5,000"))  return "AC-5K";
       if (l.includes("ac"))        return "AC";
+      if (l.includes("large heater") || (l.includes("heater") && l.includes("large"))) return "Heater-L";
+      if (l.includes("small heater") || (l.includes("heater") && l.includes("small"))) return "Heater-S";
+      if (l.includes("heater"))    return "Heater";
       if (l.includes("fan"))       return "Fan";
-      if (l.includes("ez spare"))  return "EZ Spare";
+      if (l.includes("ez spare"))  return "EZ-Spare";
       if (l.includes("spare"))     return "Spare";
       return "EQ";
     }
@@ -229,29 +235,53 @@
       const sel = document.getElementById("co-equip-select");
       if (!sel) return;
       const cur = sel.value;
-      sel.innerHTML = '<option value="">— Select equipment —</option>';
+      sel.innerHTML = '<option value="">— Select equipment type —</option>';
+
+      // Group available items by name
+      const groups = {};
       Object.entries(equipmentMap)
         .filter(([,d]) => d.status === "available")
-        .sort((a,b) => (a[1].eqId||"").localeCompare(b[1].eqId||"", undefined, {numeric:true}))
         .forEach(([id, d]) => {
-          const opt = document.createElement("option");
-          opt.value = id;
-          opt.textContent = (d.eqId||"") + " — " + d.name;
-          sel.appendChild(opt);
+          if (!groups[d.name]) groups[d.name] = [];
+          groups[d.name].push(id);
         });
-      sel.value = cur;
+
+      // Sort and add grouped options
+      Object.keys(groups).sort().forEach(name => {
+        const count = groups[name].length;
+        const opt   = document.createElement("option");
+        opt.value   = "group:" + name;
+        opt.textContent = name + "  (" + count + " available)";
+        sel.appendChild(opt);
+      });
+
+      // Restore selection if still valid
+      if (cur && sel.querySelector('option[value="'+cur+'"]')) sel.value = cur;
     }
 
     window.addItemToCheckout = function() {
-      const sel = document.getElementById("co-equip-select");
-      const id  = sel.value;
-      if (!id) { alert("Select an equipment item."); return; }
-      const d = equipmentMap[id];
-      if (d.status !== "available") { alert("This item is not available."); return; }
-      if (checkoutItems.find(i => i.firestoreId === id)) { showToast(d.eqId + " already added."); return; }
-      checkoutItems.push({ firestoreId: id, name: d.name, eqId: d.eqId || "" });
-      sel.value = "";
+      const sel  = document.getElementById("co-equip-select");
+      const val  = sel.value;
+      if (!val)  { alert("Select an equipment type."); return; }
+
+      const name = val.replace("group:", "");
+
+      // Find next available unit of this type not already staged
+      const stagedIds = checkoutItems.map(i => i.firestoreId);
+      const available = Object.entries(equipmentMap)
+        .filter(([id, d]) => d.name === name && d.status === "available" && !stagedIds.includes(id))
+        .sort((a,b) => (a[1].eqId||"").localeCompare(b[1].eqId||"", undefined, {numeric:true}));
+
+      if (!available.length) { alert("No more " + name + " units available."); return; }
+
+      const [firestoreId, d] = available[0];
+      checkoutItems.push({ firestoreId, name: d.name, eqId: d.eqId || "" });
       renderCheckoutItems();
+      showToast("Added: " + (d.eqId||d.name));
+
+      // Refresh counts and keep same type selected
+      populateCheckoutDropdown();
+      sel.value = "group:" + name;
     };
 
     function renderCheckoutItems() {
@@ -573,10 +603,80 @@
       if (checkoutItems.find(i=>i.firestoreId===firestoreId)) { showScanStatus(eqId+" already added","orange"); return; }
       checkoutItems.push({ firestoreId, name:d.name, eqId:d.eqId||"" });
       renderCheckoutItems();
-      showScanStatus("Added: "+eqId+" — "+d.name, "green");
-      // Keep scanner open for multiple scans
-      setTimeout(()=>{ document.getElementById("scanner-status").textContent="Point camera at next QR code"; document.getElementById("scanner-status").style.color="var(--muted)"; }, 1500);
+
+      // Show item added popup
+      showItemAddedPopup(d.eqId, d.name);
     }
+
+    function showItemAddedPopup(eqId, name) {
+      // Remove any existing popup
+      const existing = document.getElementById("scan-popup");
+      if (existing) existing.remove();
+
+      const popup = document.createElement("div");
+      popup.id = "scan-popup";
+      popup.innerHTML = `
+        <div class="scan-popup-icon">&#10003;</div>
+        <div class="scan-popup-title">Item Added!</div>
+        <div class="scan-popup-eqid">${eqId}</div>
+        <div class="scan-popup-name">${name}</div>
+        <div class="scan-popup-actions">
+          <button class="scan-popup-btn scan-another" onclick="scanAnother()">&#128247; Scan Another</button>
+          <button class="scan-popup-btn scan-done" onclick="closeScanPopup()">&#10003; Done</button>
+        </div>
+      `;
+      document.getElementById("scanner-modal").appendChild(popup);
+
+      // Auto-dismiss after 4s if no action
+      popup._timeout = setTimeout(() => { closeScanPopup(); }, 4000);
+    }
+
+    window.scanAnother = function() {
+      closeScanPopup();
+      // Reset lastScanned so scanner picks up next code
+      lastScanned = "";
+      const status = document.getElementById("scanner-status");
+      status.style.color = "var(--muted)";
+      status.textContent = "📷 Scan next item…";
+      // Resume scan loop
+      if (scannerStream) {
+        const video  = document.getElementById("scanner-video");
+        const canvas = document.getElementById("scanner-canvas");
+        function loop() {
+          if (!scannerStream) return;
+          const vw = video.videoWidth, vh = video.videoHeight;
+          if (!vw || !vh) { scannerRAF = requestAnimationFrame(loop); return; }
+          canvas.width = vw; canvas.height = vh;
+          const ctx = canvas.getContext("2d", { willReadFrequently: true });
+          ctx.drawImage(video, 0, 0, vw, vh);
+          try {
+            const imgData = ctx.getImageData(0, 0, vw, vh);
+            if (window.jsQR) {
+              const code = window.jsQR(imgData.data, imgData.width, imgData.height, { inversionAttempts:"attemptBoth" });
+              if (code && code.data && code.data !== lastScanned) {
+                lastScanned = code.data;
+                status.style.color = "var(--green)";
+                status.textContent = "✓ " + code.data;
+                if (navigator.vibrate) navigator.vibrate(100);
+                const eqId = code.data.startsWith("COMC:") ? code.data.replace("COMC:","") : code.data;
+                handleCheckoutScan(eqId);
+                return;
+              }
+            }
+          } catch(e) {}
+          scannerRAF = requestAnimationFrame(loop);
+        }
+        scannerRAF = requestAnimationFrame(loop);
+      }
+    };
+
+    window.closeScanPopup = function() {
+      const popup = document.getElementById("scan-popup");
+      if (!popup) return;
+      if (popup._timeout) clearTimeout(popup._timeout);
+      popup.remove();
+      closeScanner();
+    };
 
     function handleCheckinScan(eqId) {
       const match = Object.entries(activeCallsMap).find(([,call])=>
