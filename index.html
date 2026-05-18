@@ -131,7 +131,7 @@
       loadEquipment();
       loadCalls();
       loadLog();
-      if (currentRole==="admin") loadUsers();
+      window.loadUsers(); // always load, the tab is hidden for non-admins anyway
     }
 
     // ── ID GENERATION ────────────────────────────────────────────
@@ -1151,7 +1151,7 @@
         await sendPasswordResetEmail(secondaryAuth,email);
         await signOut(secondaryAuth);
         await addLog({action:"USER_ADDED",equipmentName:name+" (MC-"+unit+") as "+role,userId:currentUser.uid,userName:currentUser.displayName||currentUser.email});
-        closeModal(); loadUsers(); showToast("MC-"+unit+" created! Reset email sent.");
+        closeModal(); window.loadUsers(); showToast("MC-"+unit+" created! Reset email sent.");
       } catch(e) {
         if(e.code==="auth/email-already-in-use")err.textContent="Email already in use.";
         else err.textContent="Error: "+e.message;
@@ -1188,21 +1188,21 @@
       const role=document.getElementById("u-role").value;
       if(!name||!unit){alert("Name and unit required.");return;}
       await updateDoc(doc(db,"users",uid),{displayName:name,unitNumber:unit,email,role});
-      closeModal(); loadUsers(); showToast("User updated!");
+      closeModal(); window.loadUsers(); showToast("User updated!");
     }
 
     window.removeUser = async function(uid,name) {
       if(!confirm("Remove "+name+"?"))return;
       await deleteDoc(doc(db,"users",uid));
       await addLog({action:"USER_REMOVED",equipmentName:name,userId:currentUser.uid,userName:currentUser.displayName||currentUser.email});
-      closeModal(); loadUsers(); showToast(name+" removed.");
+      closeModal(); window.loadUsers(); showToast(name+" removed.");
     };
 
     window.sendReset = async function(email) {
       await sendPasswordResetEmail(auth,email); showToast("Reset email sent to "+email);
     };
 
-    function loadUsers() {
+    window.loadUsers = function() {
       const c = document.getElementById("users-list"); if (!c) return;
       c.innerHTML = '<div class="loading">Loading...</div>';
       const u = onSnapshot(collection(db,"users"),
@@ -1577,6 +1577,8 @@
     document.querySelectorAll(".tab-content").forEach(t=>t.classList.remove("active"));
     if(el) el.classList.add("active");
     document.getElementById("tab-"+name).classList.add("active");
+    // Refresh users list every time the tab is opened
+    if (name === "users" && window.loadUsers) window.loadUsers();
   }
 </script>
 </body>
