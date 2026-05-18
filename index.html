@@ -169,7 +169,10 @@
       });
       const u2 = onSnapshot(query(collection(db,"calls"), orderBy("openedAt","desc")), snap => {
         activeCallsMap = {};
-        snap.forEach(d => { if(d.data().status==="open") activeCallsMap[d.id]=d.data(); });
+        snap.forEach(d => {
+          if(d.data().status==="open") activeCallsMap[d.id]=d.data();
+        });
+        console.log("activeCallsMap updated:", Object.keys(activeCallsMap), Object.values(activeCallsMap).map(c=>c.callNumber));
         renderInUse();
         renderCheckinList();
         populateCheckoutDropdown();
@@ -347,6 +350,25 @@
       showToast("Call #"+callNum+" opened!");
     };
 
+    window.forceCloseCall = async function(callId) {
+      const call = activeCallsMap[callId];
+      if (!call) return;
+      if (!confirm("Force close Call #"+call.callNumber+"?\n\nThis will close the call without updating equipment status. Use this only for old calls created before the equipment ID system.")) return;
+      try {
+        await updateDoc(doc(db,"calls",callId), {
+          status:"closed",
+          closedAt:serverTimestamp(),
+          closedBy:currentUser.displayName||currentUser.email,
+          closedNote:"Force closed — legacy call"
+        });
+        await addLog({ action:"FORCE_CLOSED", callNumber:call.callNumber,
+          userId:currentUser.uid, userName:currentUser.displayName||currentUser.email });
+        showToast("Call #"+call.callNumber+" force closed.");
+      } catch(e) {
+        alert("Error: "+e.message);
+      }
+    };
+
     // ── CHECK IN TAB ─────────────────────────────────────────────
     function renderCheckinList() {
       const c = document.getElementById("checkin-calls-list");
@@ -358,90 +380,123 @@
       calls.forEach(([callId, call]) => {
         const ts   = call.openedAt?.toDate();
         const time = ts ? ts.toLocaleString() : "—";
+        // Detect legacy call — items missing firestoreId
+        const isLegacy = (call.items||[]).some(i => !i.firestoreId);
         const card = document.createElement("div");
         card.className = "call-card";
-        card.style.borderLeftColor = "var(--sky)";
+        card.style.borderLeftColor = isLegacy ? "var(--orange)" : "var(--sky)";
 
-        // Header
         const header = document.createElement("div");
         header.innerHTML = `
           <div class="call-header">
             <div class="call-num">Call #${call.callNumber}</div>
             <div class="call-status-badge" style="background:rgba(124,200,232,.2);color:var(--sky)">OPEN</div>
           </div>
+          ${isLegacy ? `<div style="background:var(--orange-bg,#3a2820);border:1px solid var(--orange);border-radius:6px;padding:8px 10px;font-size:.78rem;color:#ffb89a;margin-bottom:8px;">&#9888; Legacy call — created before equipment IDs. Use Force Close below.</div>` : ""}
           <div class="call-meta-row">
             ${call.location   ? `<span>&#128205; ${call.location}</span>` : ""}
             ${call.memberName ? `<span>&#128100; ${call.memberName}${call.memberUnit?" (MC-"+call.memberUnit+")":""}</span>` : ""}
           </div>
-          <div class="call-items-label" style="font-size:.68rem;font-weight:600;color:var(--muted);letter-spacing:.1em;text-transform:uppercase;margin-bottom:6px;">Tap item to return:</div>
+          <div class="call-items-label" style="font-size:.68rem;font-weight:600;color:var(--muted);letter-spacing:.1em;text-transform:uppercase;margin-bottom:6px;">${isLegacy ? "Equipment (legacy):" : "Tap item to return:"}</div>
         `;
         card.appendChild(header);
 
-        // Item rows with addEventListener — no inline onclick strings
+        // Item rows
         (call.items||[]).forEach(item => {
           const row = document.createElement("div");
-          row.className = "call-item checkin-item";
-          row.style.cursor = "pointer";
+          row.className = "call-item" + (item.firestoreId ? " checkin-item" : "");
           row.innerHTML = `
-            <span class="call-item-name">${item.name} <span class="call-item-eqid">${item.eqId}</span></span>
-            <span class="checkin-return-tag">&#10003; Return</span>
+            <span class="call-item-name">${item.name||item.equipmentName||"Unknown"} ${item.eqId ? '<span class="call-item-eqid">'+item.eqId+'</span>' : ""}</span>
+            ${item.firestoreId ? '<span class="checkin-return-tag">&#10003; Return</span>' : '<span style="font-size:.72rem;color:var(--muted)">legacy</span>'}
           `;
-          row.addEventListener("click", function() {
-            returnSingleItem(callId, item.firestoreId, item.eqId);
-          });
+          if (item.firestoreId) {
+            row.style.cursor = "pointer";
+            row.addEventListener("click", function() {
+              returnSingleItem(callId, item.firestoreId, item.eqId||item.equipmentName||"");
+            });
+          }
           card.appendChild(row);
         });
 
-        // Footer + close button
         const footer = document.createElement("div");
         footer.style.marginTop = "8px";
-        footer.innerHTML = `<div class="call-footer-meta">${call.openedBy} &bull; ${time}</div>`;
+        footer.innerHTML = `<div class="call-footer-meta">${call.openedBy||""} &bull; ${time}</div>`;
         card.appendChild(footer);
 
-        const closeBtn = document.createElement("button");
-        closeBtn.className = "close-call-btn";
-        closeBtn.style.cssText = "width:100%;margin-top:8px";
-        closeBtn.innerHTML = "&#10003; Return All &amp; Close Call";
-        closeBtn.addEventListener("click", function() { closeCall(callId); });
-        card.appendChild(closeBtn);
+        const btnRow = document.createElement("div");
+        btnRow.style.cssText = "display:flex;gap:8px;margin-top:8px;";
 
+        if (!isLegacy) {
+          const closeBtn = document.createElement("button");
+          closeBtn.className = "close-call-btn";
+          closeBtn.style.flex = "2";
+          closeBtn.innerHTML = "&#10003; Return All &amp; Close";
+          closeBtn.addEventListener("click", function() { closeCall(callId); });
+          btnRow.appendChild(closeBtn);
+        }
+
+        const forceBtn = document.createElement("button");
+        forceBtn.style.cssText = "flex:1;padding:10px;background:rgba(232,112,64,.15);color:var(--orange);border:1px solid rgba(232,112,64,.3);border-radius:7px;font-family:'Barlow Condensed',sans-serif;font-size:.82rem;font-weight:700;text-transform:uppercase;cursor:pointer;";
+        forceBtn.innerHTML = isLegacy ? "&#128465; Force Close" : "&#8634; Force Close";
+        forceBtn.addEventListener("click", function() { forceCloseCall(callId); });
+        btnRow.appendChild(forceBtn);
+
+        card.appendChild(btnRow);
         c.appendChild(card);
       });
     }
 
     window.returnSingleItem = async function(callId, firestoreId, eqId) {
+      console.log("returnSingleItem called:", callId, firestoreId, eqId);
       const call = activeCallsMap[callId];
-      if (!call) return;
+      console.log("call found:", call);
+      if (!call) { alert("Call not found in activeCallsMap. Try refreshing."); return; }
       const item = (call.items||[]).find(i=>i.firestoreId===firestoreId);
-      if (!item) return;
+      console.log("item found:", item);
+      if (!item) { alert("Item not found in call. Try refreshing."); return; }
       if (!confirm("Return "+eqId+" — "+item.name+" from Call #"+call.callNumber+"?")) return;
 
-      const remaining = (call.items||[]).filter(i=>i.firestoreId!==firestoreId);
-      const batch = writeBatch(db);
-      batch.update(doc(db,"equipment",firestoreId), { status: "available" });
-      if (remaining.length===0) {
-        batch.update(doc(db,"calls",callId), { status:"closed", closedAt:serverTimestamp(), closedBy: currentUser.displayName||currentUser.email });
-      } else {
-        batch.update(doc(db,"calls",callId), { items: remaining });
+      try {
+        const remaining = (call.items||[]).filter(i=>i.firestoreId!==firestoreId);
+        console.log("remaining items:", remaining.length);
+        const batch = writeBatch(db);
+        batch.update(doc(db,"equipment",firestoreId), { status: "available" });
+        if (remaining.length===0) {
+          batch.update(doc(db,"calls",callId), { status:"closed", closedAt:serverTimestamp(), closedBy: currentUser.displayName||currentUser.email });
+        } else {
+          batch.update(doc(db,"calls",callId), { items: remaining });
+        }
+        await batch.commit();
+        console.log("batch committed successfully");
+        await addLog({ action:"CHECK_IN", callNumber:call.callNumber, equipmentName:item.name+" ("+eqId+")",
+          userId:currentUser.uid, userName:currentUser.displayName||currentUser.email });
+        showToast(eqId+" returned!");
+      } catch(e) {
+        console.error("Error returning item:", e);
+        alert("Error: " + e.message);
       }
-      await batch.commit();
-      await addLog({ action:"CHECK_IN", callNumber:call.callNumber, equipmentName:item.name+" ("+eqId+")",
-        userId:currentUser.uid, userName:currentUser.displayName||currentUser.email });
-      showToast(eqId+" returned!");
     };
 
     window.closeCall = async function(callId) {
+      console.log("closeCall called:", callId);
       const call = activeCallsMap[callId];
-      if (!call) return;
+      console.log("call found:", call);
+      if (!call) { alert("Call not found. Try refreshing."); return; }
       if (!confirm("Close Call #"+call.callNumber+" and return all equipment?")) return;
-      const batch = writeBatch(db);
-      (call.items||[]).forEach(i => batch.update(doc(db,"equipment",i.firestoreId), { status:"available" }));
-      batch.update(doc(db,"calls",callId), { status:"closed", closedAt:serverTimestamp(), closedBy:currentUser.displayName||currentUser.email });
-      await batch.commit();
-      await addLog({ action:"CALL_CLOSED", callNumber:call.callNumber,
-        items:(call.items||[]).map(i=>i.eqId).join(", "),
-        userId:currentUser.uid, userName:currentUser.displayName||currentUser.email });
-      showToast("Call #"+call.callNumber+" closed.");
+      try {
+        const batch = writeBatch(db);
+        (call.items||[]).forEach(i => batch.update(doc(db,"equipment",i.firestoreId), { status:"available" }));
+        batch.update(doc(db,"calls",callId), { status:"closed", closedAt:serverTimestamp(), closedBy:currentUser.displayName||currentUser.email });
+        await batch.commit();
+        console.log("closeCall batch committed");
+        await addLog({ action:"CALL_CLOSED", callNumber:call.callNumber,
+          items:(call.items||[]).map(i=>i.eqId).join(", "),
+          userId:currentUser.uid, userName:currentUser.displayName||currentUser.email });
+        showToast("Call #"+call.callNumber+" closed.");
+      } catch(e) {
+        console.error("Error closing call:", e);
+        alert("Error: " + e.message);
+      }
     };
 
     // ── IN USE TAB ───────────────────────────────────────────────
@@ -1143,11 +1198,16 @@
     function loadUsers() {
       const c=document.getElementById("users-list"); if(!c)return;
       c.innerHTML='<div class="loading">Loading...</div>';
-      onSnapshot(query(collection(db,"users"),orderBy("displayName")),snap=>{
+      // Use getDocs without orderBy to avoid needing a Firestore index
+      onSnapshot(collection(db,"users"), snap=>{
         c.innerHTML="";
         if(snap.empty){c.innerHTML='<div class="empty">No users.</div>';return;}
-        snap.forEach(d=>{
-          const u=d.data(); const card=document.createElement("div"); card.className="user-card";
+        // Sort client-side
+        const users = [];
+        snap.forEach(d => users.push({id:d.id, ...d.data()}));
+        users.sort((a,b)=>(a.displayName||"").localeCompare(b.displayName||""));
+        users.forEach(u=>{
+          const card=document.createElement("div"); card.className="user-card";
           card.innerHTML=`
             <div class="user-info-row">
               <div class="user-avatar">${(u.displayName||u.email||"?")[0].toUpperCase()}</div>
@@ -1158,7 +1218,7 @@
               <div class="user-role-badge ${u.role==="admin"?"role-admin":"role-member"}">${u.role||"member"}</div>
             </div>
             <div class="user-actions">
-              <button class="user-btn" onclick="editUser('${d.id}')">&#9998; Edit</button>
+              <button class="user-btn" onclick="editUser('${u.id}')">&#9998; Edit</button>
               <button class="user-btn" onclick="sendReset('${u.email}')">&#128274; Reset Password</button>
             </div>`;
           c.appendChild(card);
