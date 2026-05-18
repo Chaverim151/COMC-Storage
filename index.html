@@ -237,54 +237,77 @@
     function populateCheckoutDropdown() {
       const sel = document.getElementById("co-equip-select");
       if (!sel) return;
-      const cur = sel.value;
       sel.innerHTML = '<option value="">— Select equipment type —</option>';
 
       // Group available items by name
       const groups = {};
+      const stagedIds = checkoutItems.map(i => i.firestoreId);
       Object.entries(equipmentMap)
-        .filter(([,d]) => d.status === "available")
+        .filter(([id, d]) => d.status === "available" && !stagedIds.includes(id))
         .forEach(([id, d]) => {
           if (!groups[d.name]) groups[d.name] = [];
-          groups[d.name].push(id);
+          groups[d.name].push({id, d});
         });
 
-      // Sort and add grouped options
       Object.keys(groups).sort().forEach(name => {
         const count = groups[name].length;
         const opt   = document.createElement("option");
-        opt.value   = "group:" + name;
+        opt.value   = name;
         opt.textContent = name + "  (" + count + " available)";
         sel.appendChild(opt);
       });
 
-      // Restore selection if still valid
-      if (cur && sel.querySelector('option[value="'+cur+'"]')) sel.value = cur;
+      // Reset the specific ID dropdown
+      const idSel = document.getElementById("co-id-select");
+      if (idSel) { idSel.innerHTML = '<option value="">— Select type first —</option>'; idSel.disabled = true; }
     }
 
-    window.addItemToCheckout = function() {
-      const sel  = document.getElementById("co-equip-select");
-      const val  = sel.value;
-      if (!val)  { alert("Select an equipment type."); return; }
-
-      const name = val.replace("group:", "");
-
-      // Find next available unit of this type not already staged
+    window.onTypeSelect = function() {
+      const typeSel = document.getElementById("co-equip-select");
+      const idSel   = document.getElementById("co-id-select");
+      const name    = typeSel.value;
+      idSel.innerHTML = "";
+      if (!name) {
+        idSel.innerHTML = '<option value="">— Select type first —</option>';
+        idSel.disabled = true;
+        return;
+      }
       const stagedIds = checkoutItems.map(i => i.firestoreId);
       const available = Object.entries(equipmentMap)
         .filter(([id, d]) => d.name === name && d.status === "available" && !stagedIds.includes(id))
         .sort((a,b) => (a[1].eqId||"").localeCompare(b[1].eqId||"", undefined, {numeric:true}));
 
-      if (!available.length) { alert("No more " + name + " units available."); return; }
+      if (!available.length) {
+        idSel.innerHTML = '<option value="">No units available</option>';
+        idSel.disabled = true;
+        return;
+      }
+      idSel.disabled = false;
+      idSel.innerHTML = '<option value="">— Select unit ID —</option>';
+      available.forEach(([id, d]) => {
+        const opt = document.createElement("option");
+        opt.value = id;
+        opt.textContent = (d.eqId || id);
+        idSel.appendChild(opt);
+      });
+    };
 
-      const [firestoreId, d] = available[0];
+    window.addItemToCheckout = function() {
+      const firestoreId = document.getElementById("co-id-select")?.value;
+      if (!firestoreId) { alert("Select a specific unit ID."); return; }
+      const d = equipmentMap[firestoreId];
+      if (!d) { alert("Item not found."); return; }
+      if (d.status !== "available") { alert(d.eqId + " is no longer available."); return; }
+      if (checkoutItems.find(i => i.firestoreId === firestoreId)) { showToast(d.eqId + " already added."); return; }
       checkoutItems.push({ firestoreId, name: d.name, eqId: d.eqId || "" });
       renderCheckoutItems();
       showToast("Added: " + (d.eqId||d.name));
-
-      // Refresh counts and keep same type selected
+      // Reset selectors
+      document.getElementById("co-equip-select").value = "";
+      const idSel = document.getElementById("co-id-select");
+      idSel.innerHTML = '<option value="">— Select type first —</option>';
+      idSel.disabled = true;
       populateCheckoutDropdown();
-      sel.value = "group:" + name;
     };
 
     function renderCheckoutItems() {
@@ -1486,12 +1509,19 @@
       <h3>&#128230; Add Equipment</h3>
       <button class="scan-btn" onclick="openScanner('checkout')">&#128247; Scan QR Code</button>
       <div class="scan-divider"><span>or select manually</span></div>
-      <div class="add-item-row">
-        <div class="form-group"><label>Equipment</label>
-          <select id="co-equip-select"><option value="">— Select —</option></select>
-        </div>
+      <div class="form-group">
+        <label>Equipment Type</label>
+        <select id="co-equip-select" onchange="onTypeSelect()">
+          <option value="">— Select type —</option>
+        </select>
       </div>
-      <button class="tbtn tbtn-muted" onclick="addItemToCheckout()" style="width:100%;margin-top:8px;">+ Add Item</button>
+      <div class="form-group">
+        <label>Specific Unit ID</label>
+        <select id="co-id-select" disabled>
+          <option value="">— Select type first —</option>
+        </select>
+      </div>
+      <button class="tbtn tbtn-muted" onclick="addItemToCheckout()" style="width:100%;">+ Add Item</button>
       <div id="co-items-list"><div class="empty-small">No items added yet.</div></div>
     </div>
     <button class="submit-checkout-btn" onclick="submitCheckout()">&#128229; Open Call &amp; Check Out</button>
