@@ -1203,34 +1203,40 @@
     };
 
     function loadUsers() {
-      const c=document.getElementById("users-list"); if(!c)return;
-      c.innerHTML='<div class="loading">Loading...</div>';
-      // Use getDocs without orderBy to avoid needing a Firestore index
-      onSnapshot(collection(db,"users"), snap=>{
-        c.innerHTML="";
-        if(snap.empty){c.innerHTML='<div class="empty">No users.</div>';return;}
-        // Sort client-side
-        const users = [];
-        snap.forEach(d => users.push({id:d.id, ...d.data()}));
-        users.sort((a,b)=>(a.displayName||"").localeCompare(b.displayName||""));
-        users.forEach(u=>{
-          const card=document.createElement("div"); card.className="user-card";
-          card.innerHTML=`
-            <div class="user-info-row">
-              <div class="user-avatar">${(u.displayName||u.email||"?")[0].toUpperCase()}</div>
-              <div class="user-details">
-                <div class="user-display-name">${u.displayName||"—"}</div>
-                <div class="user-email">MC-${u.unitNumber||"???"} &bull; ${u.email||"—"}</div>
+      const c = document.getElementById("users-list"); if (!c) return;
+      c.innerHTML = '<div class="loading">Loading...</div>';
+      const u = onSnapshot(collection(db,"users"),
+        snap => {
+          c.innerHTML = "";
+          if (snap.empty) { c.innerHTML='<div class="empty">No users found.</div>'; return; }
+          const users = [];
+          snap.forEach(d => users.push({id:d.id, ...d.data()}));
+          users.sort((a,b) => (a.displayName||"").localeCompare(b.displayName||""));
+          users.forEach(u => {
+            const card = document.createElement("div");
+            card.className = "user-card";
+            card.innerHTML = `
+              <div class="user-info-row">
+                <div class="user-avatar">${(u.displayName||u.email||"?")[0].toUpperCase()}</div>
+                <div class="user-details">
+                  <div class="user-display-name">${u.displayName||"—"}</div>
+                  <div class="user-email">MC-${u.unitNumber||"???"} &bull; ${u.email||"—"}</div>
+                </div>
+                <div class="user-role-badge ${u.role==="admin"?"role-admin":"role-member"}">${u.role||"member"}</div>
               </div>
-              <div class="user-role-badge ${u.role==="admin"?"role-admin":"role-member"}">${u.role||"member"}</div>
-            </div>
-            <div class="user-actions">
-              <button class="user-btn" onclick="editUser('${u.id}')">&#9998; Edit</button>
-              <button class="user-btn" onclick="sendReset('${u.email}')">&#128274; Reset Password</button>
-            </div>`;
-          c.appendChild(card);
-        });
-      });
+              <div class="user-actions">
+                <button class="user-btn" onclick="editUser('${u.id}')">&#9998; Edit</button>
+                <button class="user-btn" onclick="sendReset('${u.email}')">&#128274; Reset Password</button>
+              </div>`;
+            c.appendChild(card);
+          });
+        },
+        err => {
+          console.error("loadUsers error:", err);
+          c.innerHTML = '<div class="empty" style="color:var(--red)">Error loading users: ' + err.message + '</div>';
+        }
+      );
+      unsubs.push(u);
     }
 
     // ── MODAL / TOAST / HELPERS ───────────────────────────────────
