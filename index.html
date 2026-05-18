@@ -352,18 +352,23 @@
 
     window.forceCloseCall = async function(callId) {
       const call = activeCallsMap[callId];
-      if (!call) return;
-      if (!confirm("Force close Call #"+call.callNumber+"?\n\nThis will close the call without updating equipment status. Use this only for old calls created before the equipment ID system.")) return;
+      if (!call) { alert("Call not found."); return; }
+      if (!confirm("Force close Call #"+call.callNumber+"?\n\nThis will mark the call as closed. Equipment status will NOT be updated — use this for old calls only.")) return;
       try {
+        // Only update the call document — no equipment updates
         await updateDoc(doc(db,"calls",callId), {
-          status:"closed",
-          closedAt:serverTimestamp(),
-          closedBy:currentUser.displayName||currentUser.email,
-          closedNote:"Force closed — legacy call"
+          status: "closed",
+          closedAt: serverTimestamp(),
+          closedBy: currentUser.displayName||currentUser.email,
+          closedNote: "Force closed — legacy call (pre-ID system)"
         });
-        await addLog({ action:"FORCE_CLOSED", callNumber:call.callNumber,
-          userId:currentUser.uid, userName:currentUser.displayName||currentUser.email });
-        showToast("Call #"+call.callNumber+" force closed.");
+        await addLog({
+          action: "FORCE_CLOSED",
+          callNumber: call.callNumber,
+          userId: currentUser.uid,
+          userName: currentUser.displayName||currentUser.email
+        });
+        showToast("Call #"+call.callNumber+" closed.");
       } catch(e) {
         alert("Error: "+e.message);
       }
@@ -426,20 +431,22 @@
         const btnRow = document.createElement("div");
         btnRow.style.cssText = "display:flex;gap:8px;margin-top:8px;";
 
-        if (!isLegacy) {
-          const closeBtn = document.createElement("button");
-          closeBtn.className = "close-call-btn";
-          closeBtn.style.flex = "2";
-          closeBtn.innerHTML = "&#10003; Return All &amp; Close";
-          closeBtn.addEventListener("click", function() { closeCall(callId); });
-          btnRow.appendChild(closeBtn);
-        }
+        const closeBtn = document.createElement("button");
+        closeBtn.className = "close-call-btn";
+        closeBtn.style.flex = "2";
+        closeBtn.innerHTML = isLegacy ? "&#128465; Force Close" : "&#10003; Return All &amp; Close";
+        closeBtn.addEventListener("click", function() {
+          isLegacy ? forceCloseCall(callId) : closeCall(callId);
+        });
+        btnRow.appendChild(closeBtn);
 
-        const forceBtn = document.createElement("button");
-        forceBtn.style.cssText = "flex:1;padding:10px;background:rgba(232,112,64,.15);color:var(--orange);border:1px solid rgba(232,112,64,.3);border-radius:7px;font-family:'Barlow Condensed',sans-serif;font-size:.82rem;font-weight:700;text-transform:uppercase;cursor:pointer;";
-        forceBtn.innerHTML = isLegacy ? "&#128465; Force Close" : "&#8634; Force Close";
-        forceBtn.addEventListener("click", function() { forceCloseCall(callId); });
-        btnRow.appendChild(forceBtn);
+        if (!isLegacy) {
+          const forceBtn = document.createElement("button");
+          forceBtn.style.cssText = "flex:1;padding:10px;background:rgba(232,112,64,.15);color:var(--orange);border:1px solid rgba(232,112,64,.3);border-radius:7px;font-family:'Barlow Condensed',sans-serif;font-size:.82rem;font-weight:700;text-transform:uppercase;cursor:pointer;";
+          forceBtn.innerHTML = "Force Close";
+          forceBtn.addEventListener("click", function() { forceCloseCall(callId); });
+          btnRow.appendChild(forceBtn);
+        }
 
         card.appendChild(btnRow);
         c.appendChild(card);
