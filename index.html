@@ -388,7 +388,7 @@
       checkoutItems = [];
       renderCheckoutItems();
       ["co-callnum","co-location","co-notes"].forEach(id => document.getElementById(id).value="");
-      switchTab("inuse", document.querySelector('.tab[data-tab="inuse"]'));
+      switchTab("checkin", document.querySelector('.tab[data-tab="checkin"]'));
       showToast("Call #"+callNum+" opened!");
     };
 
@@ -457,6 +457,13 @@
           closeBtn.innerHTML = "&#10003; Return All &amp; Close";
           closeBtn.addEventListener("click", function() { closeCall(callId); });
           btnRow.appendChild(closeBtn);
+
+          const partialBtn = document.createElement("button");
+          partialBtn.className = "partial-return-btn";
+          partialBtn.style.flex = "1";
+          partialBtn.innerHTML = "&#8634; Partial";
+          partialBtn.addEventListener("click", function() { showPartialReturn(callId); });
+          btnRow.appendChild(partialBtn);
         } else {
           // Legacy call — close only updates the call doc, not equipment
           const closeBtn = document.createElement("button");
@@ -507,8 +514,73 @@
       }
     };
 
+    window.showPartialReturn = function(callId) {
+      const call = activeCallsMap[callId];
+      if (!call) return;
+      const modal = document.getElementById("modal");
+      document.getElementById("modal-title").textContent = "Partial Return — Call #" + call.callNumber;
+      document.getElementById("modal-body").innerHTML = `
+        <p style="font-size:.82rem;color:var(--muted);margin-bottom:12px;">Select items to return:</p>
+        ${(call.items||[]).filter(i=>i.firestoreId).map((item, i) => `
+          <div class="form-group" style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">
+            <input type="checkbox" id="pr-${i}" checked
+              style="width:18px;height:18px;accent-color:var(--sky);flex-shrink:0;">
+            <label for="pr-${i}" style="flex:1;text-transform:none;letter-spacing:0;font-size:.9rem;color:var(--text);cursor:pointer;">
+              ${item.name}
+              <span style="font-family:'Barlow Condensed',sans-serif;font-weight:700;color:var(--sky);font-size:.82rem;margin-left:6px;">${item.eqId||""}</span>
+            </label>
+          </div>
+        `).join("")}
+        ${(call.items||[]).some(i=>!i.firestoreId) ? `<p style="font-size:.75rem;color:var(--muted);margin-top:8px;">Legacy items cannot be individually returned.</p>` : ""}
+      `;
+      document.getElementById("modal-confirm").textContent = "Return Selected";
+      document.getElementById("modal-confirm").style.display = "";
+      document.getElementById("modal-confirm").onclick = () => confirmPartialReturn(callId, call);
+      modal.style.display = "flex";
+    };
+
+    async function confirmPartialReturn(callId, call) {
+      const items = (call.items||[]).filter(i => i.firestoreId);
+      const returning = [];
+      const remaining = [];
+
+      items.forEach((item, i) => {
+        const checked = document.getElementById("pr-"+i)?.checked;
+        if (checked) returning.push(item);
+        else remaining.push(item);
+      });
+
+      // Also keep any legacy items (no firestoreId) in remaining
+      (call.items||[]).filter(i => !i.firestoreId).forEach(i => remaining.push(i));
+
+      if (!returning.length) { alert("Select at least one item to return."); return; }
+
+      try {
+        const batch = writeBatch(db);
+        returning.forEach(item => {
+          batch.update(doc(db,"equipment",item.firestoreId), { status:"available" });
+        });
+        if (remaining.length === 0) {
+          batch.update(doc(db,"calls",callId), { status:"closed", closedAt:serverTimestamp(), closedBy:currentUser.displayName||currentUser.email });
+        } else {
+          batch.update(doc(db,"calls",callId), { items: remaining });
+        }
+        await batch.commit();
+        await addLog({
+          action: "PARTIAL_RETURN",
+          callNumber: call.callNumber,
+          items: returning.map(i=>i.eqId||i.name).join(", "),
+          userId: currentUser.uid,
+          userName: currentUser.displayName||currentUser.email
+        });
+        closeModal();
+        showToast(returning.length + " item" + (returning.length>1?"s":"") + " returned from Call #"+call.callNumber);
+      } catch(e) {
+        alert("Error: "+e.message);
+      }
+    }
+
     window.closeCall = async function(callId) {
-      console.log("closeCall called:", callId);
       const call = activeCallsMap[callId];
       console.log("call found:", call);
       if (!call) { alert("Call not found. Try refreshing."); return; }
@@ -1510,7 +1582,7 @@
     </div>
     <input type="password" id="l-pass" placeholder="Password" onkeydown="if(event.key==='Enter')login()">
     <button class="login-btn" onclick="login()">Sign In</button>
-    <button class="forgot-btn" onclick="forgotPassword()">New user or forgot password? Reset here</button>
+    <button class="forgot-btn" onclick="forgotPassword()">Forgot Password?</button>
     <div id="l-error"></div>
   </div>
 </div>
@@ -1565,7 +1637,7 @@
       <button class="tbtn tbtn-muted" onclick="addItemToCheckout()" style="width:100%;">+ Add Item</button>
       <div id="co-items-list"><div class="empty-small">No items added yet.</div></div>
     </div>
-    <button class="submit-checkout-btn" onclick="submitCheckout()">&#128229; Open Call &amp; Check Out</button>
+    <button class="submit-checkout-btn" onclick="submitCheckout()">&#128229; Submit &amp; Check Out</button>
   </div>
 
   <!-- CHECK IN -->
