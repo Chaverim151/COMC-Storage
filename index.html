@@ -291,6 +291,7 @@
         idSel.disabled = true;
         return;
       }
+
       idSel.disabled = false;
       idSel.innerHTML = '<option value="">— Select unit ID —</option>';
       available.forEach(([id, d]) => {
@@ -299,6 +300,15 @@
         opt.textContent = (d.eqId || id);
         idSel.appendChild(opt);
       });
+
+      // Auto-select if only one unit available
+      if (available.length === 1) {
+        idSel.value = available[0][0];
+        idSel.style.borderColor = "var(--sky)";
+        showToast("Only unit: " + (available[0][1].eqId || available[0][0]));
+      } else {
+        idSel.style.borderColor = "";
+      }
     };
 
     window.addItemToCheckout = function() {
@@ -382,30 +392,6 @@
       showToast("Call #"+callNum+" opened!");
     };
 
-    window.forceCloseCall = async function(callId) {
-      const call = activeCallsMap[callId];
-      if (!call) { alert("Call not found."); return; }
-      if (!confirm("Force close Call #"+call.callNumber+"?\n\nThis will mark the call as closed. Equipment status will NOT be updated — use this for old calls only.")) return;
-      try {
-        // Only update the call document — no equipment updates
-        await updateDoc(doc(db,"calls",callId), {
-          status: "closed",
-          closedAt: serverTimestamp(),
-          closedBy: currentUser.displayName||currentUser.email,
-          closedNote: "Force closed — legacy call (pre-ID system)"
-        });
-        await addLog({
-          action: "FORCE_CLOSED",
-          callNumber: call.callNumber,
-          userId: currentUser.uid,
-          userName: currentUser.displayName||currentUser.email
-        });
-        showToast("Call #"+call.callNumber+" closed.");
-      } catch(e) {
-        alert("Error: "+e.message);
-      }
-    };
-
     // ── CHECK IN TAB ─────────────────────────────────────────────
     function renderCheckinList() {
       const c = document.getElementById("checkin-calls-list");
@@ -415,13 +401,12 @@
       if (!calls.length) { c.innerHTML='<div class="empty">&#10003; No open calls.</div>'; return; }
       calls.sort((a,b) => (b[1].openedAt?.seconds||0) - (a[1].openedAt?.seconds||0));
       calls.forEach(([callId, call]) => {
-        const ts   = call.openedAt?.toDate();
-        const time = ts ? ts.toLocaleString() : "—";
-        // Detect legacy call — items missing firestoreId
+        const ts      = call.openedAt?.toDate();
+        const time    = ts ? ts.toLocaleString() : "—";
         const isLegacy = (call.items||[]).some(i => !i.firestoreId);
-        const card = document.createElement("div");
+        const card    = document.createElement("div");
         card.className = "call-card";
-        card.style.borderLeftColor = isLegacy ? "var(--orange)" : "var(--sky)";
+        card.style.borderLeftColor = "var(--sky)";
 
         const header = document.createElement("div");
         header.innerHTML = `
@@ -429,27 +414,28 @@
             <div class="call-num">Call #${call.callNumber}</div>
             <div class="call-status-badge" style="background:rgba(124,200,232,.2);color:var(--sky)">OPEN</div>
           </div>
-          ${isLegacy ? `<div style="background:var(--orange-bg,#3a2820);border:1px solid var(--orange);border-radius:6px;padding:8px 10px;font-size:.78rem;color:#ffb89a;margin-bottom:8px;">&#9888; Legacy call — created before equipment IDs. Use Force Close below.</div>` : ""}
           <div class="call-meta-row">
             ${call.location   ? `<span>&#128205; ${call.location}</span>` : ""}
             ${call.memberName ? `<span>&#128100; ${call.memberName}${call.memberUnit?" (MC-"+call.memberUnit+")":""}</span>` : ""}
           </div>
-          <div class="call-items-label" style="font-size:.68rem;font-weight:600;color:var(--muted);letter-spacing:.1em;text-transform:uppercase;margin-bottom:6px;">${isLegacy ? "Equipment (legacy):" : "Tap item to return:"}</div>
+          <div class="call-items-label" style="font-size:.68rem;font-weight:600;color:var(--muted);letter-spacing:.1em;text-transform:uppercase;margin-bottom:6px;">Tap item to return:</div>
         `;
         card.appendChild(header);
 
-        // Item rows
+        // Item rows — tap individual item to return it
         (call.items||[]).forEach(item => {
           const row = document.createElement("div");
           row.className = "call-item" + (item.firestoreId ? " checkin-item" : "");
           row.innerHTML = `
             <span class="call-item-name">${item.name||item.equipmentName||"Unknown"} ${item.eqId ? '<span class="call-item-eqid">'+item.eqId+'</span>' : ""}</span>
-            ${item.firestoreId ? '<span class="checkin-return-tag">&#10003; Return</span>' : '<span style="font-size:.72rem;color:var(--muted)">legacy</span>'}
+            ${item.firestoreId
+              ? '<span class="checkin-return-tag">&#10003; Return</span>'
+              : '<span style="font-size:.72rem;color:var(--muted)">legacy</span>'}
           `;
           if (item.firestoreId) {
             row.style.cursor = "pointer";
             row.addEventListener("click", function() {
-              returnSingleItem(callId, item.firestoreId, item.eqId||item.equipmentName||"");
+              returnSingleItem(callId, item.firestoreId, item.eqId||item.name||"");
             });
           }
           card.appendChild(row);
@@ -460,24 +446,29 @@
         footer.innerHTML = `<div class="call-footer-meta">${call.openedBy||""} &bull; ${time}</div>`;
         card.appendChild(footer);
 
+        // Buttons
         const btnRow = document.createElement("div");
         btnRow.style.cssText = "display:flex;gap:8px;margin-top:8px;";
 
-        const closeBtn = document.createElement("button");
-        closeBtn.className = "close-call-btn";
-        closeBtn.style.flex = "2";
-        closeBtn.innerHTML = isLegacy ? "&#128465; Force Close" : "&#10003; Return All &amp; Close";
-        closeBtn.addEventListener("click", function() {
-          isLegacy ? forceCloseCall(callId) : closeCall(callId);
-        });
-        btnRow.appendChild(closeBtn);
-
         if (!isLegacy) {
-          const forceBtn = document.createElement("button");
-          forceBtn.style.cssText = "flex:1;padding:10px;background:rgba(232,112,64,.15);color:var(--orange);border:1px solid rgba(232,112,64,.3);border-radius:7px;font-family:'Barlow Condensed',sans-serif;font-size:.82rem;font-weight:700;text-transform:uppercase;cursor:pointer;";
-          forceBtn.innerHTML = "Force Close";
-          forceBtn.addEventListener("click", function() { forceCloseCall(callId); });
-          btnRow.appendChild(forceBtn);
+          const closeBtn = document.createElement("button");
+          closeBtn.className = "close-call-btn";
+          closeBtn.style.flex = "2";
+          closeBtn.innerHTML = "&#10003; Return All &amp; Close";
+          closeBtn.addEventListener("click", function() { closeCall(callId); });
+          btnRow.appendChild(closeBtn);
+        } else {
+          // Legacy call — close only updates the call doc, not equipment
+          const closeBtn = document.createElement("button");
+          closeBtn.className = "close-call-btn";
+          closeBtn.style.flex = "1";
+          closeBtn.innerHTML = "&#10003; Close Call";
+          closeBtn.addEventListener("click", async function() {
+            if (!confirm("Close Call #"+call.callNumber+"? (Equipment status won't be updated — legacy call)")) return;
+            await updateDoc(doc(db,"calls",callId), { status:"closed", closedAt:serverTimestamp(), closedBy:currentUser.displayName||currentUser.email });
+            showToast("Call #"+call.callNumber+" closed.");
+          });
+          btnRow.appendChild(closeBtn);
         }
 
         card.appendChild(btnRow);
@@ -1539,7 +1530,6 @@
   <div class="tabs">
     <div class="tab active" data-tab="checkout"  onclick="switchTab('checkout',this)">&#128229; Check Out</div>
     <div class="tab"        data-tab="checkin"   onclick="switchTab('checkin',this)">&#128228; Check In</div>
-    <div class="tab"        data-tab="inuse"     onclick="switchTab('inuse',this)">&#128642; In Use</div>
     <div class="tab"        data-tab="inventory" onclick="switchTab('inventory',this)">&#128230; Inventory</div>
     <div class="tab admin-only" data-tab="users" onclick="switchTab('users',this)">&#128101; Users</div>
     <div class="tab"        data-tab="log"       onclick="switchTab('log',this)">&#128203; Log</div>
@@ -1586,11 +1576,6 @@
       <div class="scan-divider"><span>or select from open calls below</span></div>
     </div>
     <div id="checkin-calls-list"></div>
-  </div>
-
-  <!-- IN USE -->
-  <div id="tab-inuse" class="tab-content">
-    <div id="active-calls-list"></div>
   </div>
 
   <!-- INVENTORY -->
