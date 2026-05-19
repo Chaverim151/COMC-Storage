@@ -219,11 +219,20 @@
               </div>
               <div class="eq-badge ${statusColor}">${statusText}</div>
             </div>
+            ${d.manufacturer||d.modelNumber ? `
+            <div class="eq-meta-row">
+              ${d.manufacturer ? `<span>&#127981; ${d.manufacturer}</span>` : ""}
+              ${d.modelNumber  ? `<span>&#128203; ${d.modelNumber}</span>` : ""}
+            </div>` : ""}
+            ${d.replacementValue ? `<div class="eq-meta-row"><span>&#128176; Replacement: $${parseFloat(d.replacementValue).toFixed(2)}</span>${d.placeOfPurchase?`<span>&#128722; ${d.placeOfPurchase}</span>`:""}</div>` : ""}
             ${d.status==="broken" && d.brokenNote ? `<div class="broken-note">&#128683; ${d.brokenNote}</div>` : ""}
-            <div class="eq-actions admin-only" style="display:${currentRole==="admin"?"flex":"none"}">
-              <button class="eq-btn btn-broken" onclick="markBroken('${id}','${d.name}')" ${d.status==="broken"?"disabled":""}>&#128683; Broken</button>
-              ${d.eqId ? `<button class="eq-btn btn-qr" onclick="showQRModal('${d.eqId}','${d.name}')">&#9638; QR</button>` : ""}
-              <button class="eq-btn btn-edit" onclick="editEquipment('${id}')">&#9998; Edit</button>
+            <div class="eq-actions" style="margin-top:8px;">
+              ${d.reorderLink ? `<a href="${d.reorderLink}" target="_blank" class="eq-btn btn-reorder">&#128722; Reorder</a>` : ""}
+              <span class="admin-only" style="display:${currentRole==="admin"?"contents":"none"}">
+                <button class="eq-btn btn-broken" onclick="markBroken('${id}','${d.name}')" ${d.status==="broken"?"disabled":""}>&#128683; Broken</button>
+                ${d.eqId ? `<button class="eq-btn btn-qr" onclick="showQRModal('${d.eqId}','${d.name}')">&#9638; QR</button>` : ""}
+                <button class="eq-btn btn-edit" onclick="editEquipment('${id}')">&#9998; Edit</button>
+              </span>
             </div>
           `;
           container.appendChild(card);
@@ -869,8 +878,18 @@
           <input id="m-name" type="text" placeholder="e.g. Large Heater" oninput="previewId()"></div>
         <div class="form-group"><label>Equipment ID</label>
           <input id="m-eqid" type="text" placeholder="Auto-generated"></div>
-        <div style="font-size:.78rem;color:var(--muted);margin-bottom:12px;">
-          Adding 1 unit. To add multiple units of the same type, use <strong>Bulk Add</strong>.
+        <div class="form-group"><label>Manufacturer</label>
+          <input id="m-manufacturer" type="text" placeholder="e.g. DeLonghi"></div>
+        <div class="form-group"><label>Model Number</label>
+          <input id="m-model" type="text" placeholder="e.g. HVF3555TB"></div>
+        <div class="form-group"><label>Replacement Value ($)</label>
+          <input id="m-value" type="number" placeholder="e.g. 49.99" step="0.01" min="0"></div>
+        <div class="form-group"><label>Place of Purchase</label>
+          <input id="m-purchase" type="text" placeholder="e.g. Home Depot"></div>
+        <div class="form-group"><label>Reorder Link</label>
+          <input id="m-reorder" type="url" placeholder="https://..."></div>
+        <div style="font-size:.78rem;color:var(--muted);margin-bottom:4px;">
+          Adding 1 unit. For multiple units use <strong>Bulk Add</strong>.
         </div>
       `;
       document.getElementById("modal-confirm").textContent = "Add Unit";
@@ -888,11 +907,21 @@
     };
 
     async function confirmAddUnit() {
-      const name = document.getElementById("m-name")?.value.trim();
-      const eqId = document.getElementById("m-eqid")?.value.trim();
+      const name         = document.getElementById("m-name")?.value.trim();
+      const eqId         = document.getElementById("m-eqid")?.value.trim();
+      const manufacturer = document.getElementById("m-manufacturer")?.value.trim() || "";
+      const modelNumber  = document.getElementById("m-model")?.value.trim() || "";
+      const value        = parseFloat(document.getElementById("m-value")?.value) || 0;
+      const purchase     = document.getElementById("m-purchase")?.value.trim() || "";
+      const reorder      = document.getElementById("m-reorder")?.value.trim() || "";
       if (!name || !eqId) { alert("Name and ID required."); return; }
       if (Object.values(equipmentMap).some(d=>d.eqId===eqId)) { alert(eqId+" already in use."); return; }
-      await addDoc(collection(db,"equipment"), { name, eqId, status:"available", createdAt:serverTimestamp() });
+      await addDoc(collection(db,"equipment"), {
+        name, eqId, status:"available",
+        manufacturer, modelNumber, replacementValue: value,
+        placeOfPurchase: purchase, reorderLink: reorder,
+        createdAt: serverTimestamp()
+      });
       await addLog({ action:"ADDED", equipmentName:name+" ("+eqId+")", userId:currentUser.uid, userName:currentUser.displayName||currentUser.email });
       closeModal();
       showToast(eqId+" added!");
@@ -952,7 +981,7 @@
       const snap = await getDoc(doc(db,"equipment",id));
       const d    = snap.data();
       const modal = document.getElementById("modal");
-      document.getElementById("modal-title").textContent = "Edit: "+d.eqId;
+      document.getElementById("modal-title").textContent = "Edit: "+(d.eqId||d.name);
       document.getElementById("modal-body").innerHTML = `
         <div class="form-group"><label>Name</label><input id="m-name" type="text" value="${d.name}"></div>
         <div class="form-group"><label>Equipment ID</label><input id="m-eqid" type="text" value="${d.eqId||""}"></div>
@@ -963,6 +992,16 @@
             <option value="broken"    ${d.status==="broken"   ?"selected":""}>Broken</option>
           </select>
         </div>
+        <div class="form-group"><label>Manufacturer</label>
+          <input id="m-manufacturer" type="text" value="${d.manufacturer||""}" placeholder="e.g. DeLonghi"></div>
+        <div class="form-group"><label>Model Number</label>
+          <input id="m-model" type="text" value="${d.modelNumber||""}" placeholder="e.g. HVF3555TB"></div>
+        <div class="form-group"><label>Replacement Value ($)</label>
+          <input id="m-value" type="number" value="${d.replacementValue||""}" placeholder="e.g. 49.99" step="0.01" min="0"></div>
+        <div class="form-group"><label>Place of Purchase</label>
+          <input id="m-purchase" type="text" value="${d.placeOfPurchase||""}" placeholder="e.g. Home Depot"></div>
+        <div class="form-group"><label>Reorder Link</label>
+          <input id="m-reorder" type="url" value="${d.reorderLink||""}" placeholder="https://..."></div>
         ${d.eqId?`<button class="tbtn tbtn-muted" style="width:100%;margin-bottom:8px" onclick="showQRModal('${d.eqId}','${d.name}')">&#9638; View QR Code</button>`:""}
         <button class="delete-btn" onclick="deleteEquipment('${id}')">&#128465; Delete Unit</button>
       `;
@@ -973,11 +1012,20 @@
     };
 
     async function confirmEdit(id) {
-      const name   = document.getElementById("m-name")?.value.trim();
-      const eqId   = document.getElementById("m-eqid")?.value.trim();
-      const status = document.getElementById("m-status")?.value;
+      const name         = document.getElementById("m-name")?.value.trim();
+      const eqId         = document.getElementById("m-eqid")?.value.trim();
+      const status       = document.getElementById("m-status")?.value;
+      const manufacturer = document.getElementById("m-manufacturer")?.value.trim() || "";
+      const modelNumber  = document.getElementById("m-model")?.value.trim() || "";
+      const value        = parseFloat(document.getElementById("m-value")?.value) || 0;
+      const purchase     = document.getElementById("m-purchase")?.value.trim() || "";
+      const reorder      = document.getElementById("m-reorder")?.value.trim() || "";
       if (!name) { alert("Name required."); return; }
-      await updateDoc(doc(db,"equipment",id), { name, eqId, status });
+      await updateDoc(doc(db,"equipment",id), {
+        name, eqId, status,
+        manufacturer, modelNumber, replacementValue: value,
+        placeOfPurchase: purchase, reorderLink: reorder
+      });
       await addLog({ action:"EDITED", equipmentName:name+" ("+eqId+")", userId:currentUser.uid, userName:currentUser.displayName||currentUser.email });
       closeModal();
     }
@@ -1141,7 +1189,7 @@
         <div class="form-group"><label>Unit Number</label>
           <div style="display:flex;align-items:center;gap:8px">
             <span style="color:var(--sky);font-family:'Barlow Condensed',sans-serif;font-weight:700;flex-shrink:0">MC-</span>
-            <input id="u-unit" type="text" placeholder="e.g. 412" inputmode="numeric" style="flex:1">
+            <input id="u-unit" type="text" placeholder="e.g. 412 or D1" style="flex:1">
           </div></div>
         <div class="form-group"><label>Email (for password reset)</label><input id="u-email" type="email" placeholder="user@example.com"></div>
         <div class="form-group"><label>Role</label>
@@ -1190,7 +1238,7 @@
         <div class="form-group"><label>Unit Number</label>
           <div style="display:flex;align-items:center;gap:8px">
             <span style="color:var(--sky);font-family:'Barlow Condensed',sans-serif;font-weight:700;flex-shrink:0">MC-</span>
-            <input id="u-unit" type="text" value="${d.unitNumber||''}" inputmode="numeric" style="flex:1">
+            <input id="u-unit" type="text" value="${d.unitNumber||''}" style="flex:1">
           </div></div>
         <div class="form-group"><label>Email</label><input id="u-email" type="email" value="${d.email||''}"></div>
         <div class="form-group"><label>Role</label>
@@ -1335,6 +1383,9 @@
     .status-out   {background:rgba(255,189,0,.2);color:var(--yellow);}
     .status-broken{background:rgba(240,80,80,.2);color:var(--red);}
     .broken-note{font-size:.78rem;color:var(--red);margin-bottom:8px;}
+    .eq-meta-row{display:flex;flex-wrap:wrap;gap:10px;font-size:.75rem;color:var(--muted);margin:4px 0;}
+    .eq-meta-row span{display:flex;align-items:center;gap:3px;}
+    .btn-reorder{background:rgba(72,199,142,.15);color:var(--green);text-decoration:none;text-align:center;}
     .eq-actions{display:flex;gap:6px;margin-top:8px;}
     .eq-btn{flex:1;padding:8px 6px;border:none;border-radius:6px;font-family:'Barlow Condensed',sans-serif;font-size:.82rem;font-weight:700;letter-spacing:.04em;text-transform:uppercase;cursor:pointer;}
     .eq-btn:disabled{opacity:.35;cursor:not-allowed;}
@@ -1463,7 +1514,7 @@
     <p>Chaverim of Middlesex County</p>
     <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">
       <span style="color:var(--sky);font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:1rem;flex-shrink:0;">MC-</span>
-      <input type="text" id="l-unit" placeholder="Unit Number" inputmode="numeric"
+      <input type="text" id="l-unit" placeholder="Unit Number (e.g. 412 or D1)"
              style="margin-bottom:0;flex:1;" onkeydown="if(event.key==='Enter')login()">
     </div>
     <input type="password" id="l-pass" placeholder="Password" onkeydown="if(event.key==='Enter')login()">
