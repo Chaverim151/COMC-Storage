@@ -566,41 +566,71 @@
       if (!call) return;
       const modal = document.getElementById("modal");
       document.getElementById("modal-title").textContent = "Partial Return — Call #" + call.callNumber;
-      document.getElementById("modal-body").innerHTML = `
-        <p style="font-size:.82rem;color:var(--muted);margin-bottom:12px;">Select items to return:</p>
-        ${(call.items||[]).filter(i=>i.firestoreId).map((item, i) => `
-          <div class="form-group" style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">
-            <input type="checkbox" id="pr-${i}" checked
-              style="width:18px;height:18px;accent-color:var(--sky);flex-shrink:0;">
-            <label for="pr-${i}" style="flex:1;text-transform:none;letter-spacing:0;font-size:.9rem;color:var(--text);cursor:pointer;">
-              ${item.name}
-              <span style="font-family:'Barlow Condensed',sans-serif;font-weight:700;color:var(--sky);font-size:.82rem;margin-left:6px;">${item.eqId||""}</span>
-            </label>
-          </div>
-        `).join("")}
-        ${(call.items||[]).some(i=>!i.firestoreId) ? `<p style="font-size:.75rem;color:var(--muted);margin-top:8px;">Legacy items cannot be individually returned.</p>` : ""}
-      `;
+      
+      const body = document.getElementById("modal-body");
+      body.innerHTML = '<p style="font-size:.82rem;color:var(--muted);margin-bottom:12px;">Uncheck items to keep out, check to return:</p>';
+
+      const returnableItems = (call.items||[]).filter(i => i.firestoreId);
+      returnableItems.forEach((item, i) => {
+        const row = document.createElement("div");
+        row.style.cssText = "display:flex;align-items:center;gap:12px;padding:10px 12px;background:var(--surface2);border-radius:8px;margin-bottom:8px;cursor:pointer;";
+        
+        const cb = document.createElement("input");
+        cb.type    = "checkbox";
+        cb.id      = "pr-" + i;
+        cb.checked = true;
+        cb.style.cssText = "width:20px;height:20px;accent-color:var(--sky);flex-shrink:0;cursor:pointer;";
+
+        const lbl = document.createElement("label");
+        lbl.htmlFor  = "pr-" + i;
+        lbl.style.cssText = "flex:1;cursor:pointer;font-size:.9rem;color:var(--text);";
+        lbl.innerHTML = item.name + (item.eqId ? ` <span style="font-family:'Barlow Condensed',sans-serif;font-weight:700;color:var(--sky);font-size:.82rem;">${item.eqId}</span>` : "");
+
+        // Tap anywhere on the row toggles the checkbox
+        row.addEventListener("click", function(e) {
+          if (e.target !== cb) cb.checked = !cb.checked;
+        });
+
+        row.appendChild(cb);
+        row.appendChild(lbl);
+        body.appendChild(row);
+      });
+
+      if ((call.items||[]).some(i => !i.firestoreId)) {
+        const note = document.createElement("p");
+        note.style.cssText = "font-size:.75rem;color:var(--muted);margin-top:8px;";
+        note.textContent = "Legacy items cannot be individually returned.";
+        body.appendChild(note);
+      }
       document.getElementById("modal-confirm").textContent = "Return Selected";
       document.getElementById("modal-confirm").style.display = "";
-      document.getElementById("modal-confirm").onclick = () => confirmPartialReturn(callId, call);
+      document.getElementById("modal-confirm").onclick = () => confirmPartialReturn(callId);
       modal.style.display = "flex";
     };
 
-    async function confirmPartialReturn(callId, call) {
+    async function confirmPartialReturn(callId) {
+      // Always read fresh from activeCallsMap
+      const call = activeCallsMap[callId];
+      if (!call) { alert("Call not found. Try refreshing."); return; }
+
       const items = (call.items||[]).filter(i => i.firestoreId);
       const returning = [];
       const remaining = [];
 
       items.forEach((item, i) => {
-        const checked = document.getElementById("pr-"+i)?.checked;
+        const checkbox = document.getElementById("pr-"+i);
+        const checked  = checkbox ? checkbox.checked : false;
         if (checked) returning.push(item);
         else remaining.push(item);
       });
 
-      // Also keep any legacy items (no firestoreId) in remaining
+      // Keep any legacy items in remaining
       (call.items||[]).filter(i => !i.firestoreId).forEach(i => remaining.push(i));
 
       if (!returning.length) { alert("Select at least one item to return."); return; }
+
+      console.log("Returning:", returning.map(i=>i.eqId));
+      console.log("Remaining:", remaining.map(i=>i.eqId));
 
       try {
         const batch = writeBatch(db);
@@ -613,6 +643,7 @@
           batch.update(doc(db,"calls",callId), { items: remaining });
         }
         await batch.commit();
+        console.log("Partial return committed successfully");
         await addLog({
           action: "PARTIAL_RETURN",
           callNumber: call.callNumber,
@@ -623,6 +654,7 @@
         closeModal();
         showToast(returning.length + " item" + (returning.length>1?"s":"") + " returned from Call #"+call.callNumber);
       } catch(e) {
+        console.error("Partial return error:", e);
         alert("Error: "+e.message);
       }
     }
