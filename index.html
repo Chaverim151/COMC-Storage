@@ -194,15 +194,23 @@
 
       // ── SUMMARY ──────────────────────────────────────────────
       if (!search) {
-        // Build summary grouped by type
+        // Build summary grouped by category
         const summary = {};
         Object.values(equipmentMap).forEach(d => {
-          const prefix = getPrefix(d.name);
-          if (!summary[prefix]) summary[prefix] = { total: 0, available: 0, out: 0, broken: 0 };
-          summary[prefix].total++;
-          if (d.status === "available") summary[prefix].available++;
-          else if (d.status === "out")    summary[prefix].out++;
-          else if (d.status === "broken") summary[prefix].broken++;
+          const l = d.name.toLowerCase();
+          let category;
+          if (l.includes("heater"))        category = "Heaters";
+          else if (l.includes("ac"))       category = "AC Units";
+          else if (l.includes("fan"))      category = "Fans";
+          else if (l.includes("ez spare")) category = "EZ Spares";
+          else if (l.includes("spare"))    category = "Spares";
+          else category = "Other";
+
+          if (!summary[category]) summary[category] = { total:0, available:0, out:0, broken:0 };
+          summary[category].total++;
+          if (d.status==="available") summary[category].available++;
+          else if (d.status==="out")    summary[category].out++;
+          else if (d.status==="broken") summary[category].broken++;
         });
 
         const summaryCard = document.createElement("div");
@@ -212,9 +220,9 @@
           <div class="summary-grid">
             ${Object.entries(summary)
               .sort((a,b) => a[0].localeCompare(b[0]))
-              .map(([prefix, s]) => `
+              .map(([cat, s]) => `
                 <div class="summary-row">
-                  <div class="summary-name">${prefix}</div>
+                  <div class="summary-name">${cat}</div>
                   <div class="summary-stats">
                     <span class="sum-avail">&#10003; ${s.available} avail</span>
                     ${s.out    ? `<span class="sum-out">&#8599; ${s.out} out</span>` : ""}
