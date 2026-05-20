@@ -192,6 +192,42 @@
 
       if (!items.length) { container.innerHTML='<div class="empty">No equipment found.</div>'; return; }
 
+      // ── SUMMARY ──────────────────────────────────────────────
+      if (!search) {
+        // Build summary grouped by type
+        const summary = {};
+        Object.values(equipmentMap).forEach(d => {
+          const prefix = getPrefix(d.name);
+          if (!summary[prefix]) summary[prefix] = { total: 0, available: 0, out: 0, broken: 0 };
+          summary[prefix].total++;
+          if (d.status === "available") summary[prefix].available++;
+          else if (d.status === "out")    summary[prefix].out++;
+          else if (d.status === "broken") summary[prefix].broken++;
+        });
+
+        const summaryCard = document.createElement("div");
+        summaryCard.className = "summary-card";
+        summaryCard.innerHTML = `
+          <div class="summary-title">&#128202; Inventory Summary</div>
+          <div class="summary-grid">
+            ${Object.entries(summary)
+              .sort((a,b) => a[0].localeCompare(b[0]))
+              .map(([prefix, s]) => `
+                <div class="summary-row">
+                  <div class="summary-name">${prefix}</div>
+                  <div class="summary-stats">
+                    <span class="sum-avail">&#10003; ${s.available} avail</span>
+                    ${s.out    ? `<span class="sum-out">&#8599; ${s.out} out</span>` : ""}
+                    ${s.broken ? `<span class="sum-broken">&#128683; ${s.broken} broken</span>` : ""}
+                    <span class="sum-total">${s.total} total</span>
+                  </div>
+                </div>
+              `).join("")}
+          </div>
+        `;
+        container.appendChild(summaryCard);
+      }
+
       // Group by prefix for display
       const groups = {};
       items.forEach(([id, d]) => {
@@ -1446,6 +1482,40 @@
     .status-out   {background:rgba(255,189,0,.2);color:var(--yellow);}
     .status-broken{background:rgba(240,80,80,.2);color:var(--red);}
     .broken-note{font-size:.78rem;color:var(--red);margin-bottom:8px;}
+
+    /* SUMMARY CARD */
+    .summary-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px 16px;
+      margin-bottom: 6px;
+    }
+    .summary-title {
+      font-family: 'Barlow Condensed', sans-serif;
+      font-size: .78rem; font-weight: 700;
+      color: var(--muted); letter-spacing: .12em;
+      text-transform: uppercase; margin-bottom: 10px;
+    }
+    .summary-grid { display: flex; flex-direction: column; gap: 6px; }
+    .summary-row {
+      display: flex; align-items: center;
+      justify-content: space-between; gap: 8px;
+      padding: 6px 10px;
+      background: var(--surface2);
+      border-radius: 6px;
+    }
+    .summary-name {
+      font-family: 'Barlow Condensed', sans-serif;
+      font-size: .9rem; font-weight: 700;
+      color: var(--text); letter-spacing: .03em;
+      min-width: 80px;
+    }
+    .summary-stats { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .sum-avail  { font-size: .75rem; color: var(--green);  font-weight: 600; }
+    .sum-out    { font-size: .75rem; color: var(--yellow); font-weight: 600; }
+    .sum-broken { font-size: .75rem; color: var(--red);    font-weight: 600; }
+    .sum-total  { font-size: .72rem; color: var(--muted); }
     .eq-meta-row{display:flex;flex-wrap:wrap;gap:10px;font-size:.75rem;color:var(--muted);margin:4px 0;}
     .eq-meta-row span{display:flex;align-items:center;gap:3px;}
     .btn-reorder{background:rgba(72,199,142,.15);color:var(--green);text-decoration:none;text-align:center;}
