@@ -498,34 +498,43 @@
         btnRow.style.cssText = "display:flex;gap:8px;margin-top:8px;";
 
         if (!isLegacy) {
-          const closeBtn = document.createElement("button");
-          closeBtn.className = "close-call-btn";
-          closeBtn.style.flex = "2";
-          closeBtn.innerHTML = "&#10003; Return All &amp; Close";
-          closeBtn.addEventListener("click", function() { closeCall(callId); });
-          btnRow.appendChild(closeBtn);
-
           const partialBtn = document.createElement("button");
           partialBtn.className = "partial-return-btn";
           partialBtn.style.flex = "1";
-          partialBtn.innerHTML = "&#8634; Partial";
+          partialBtn.innerHTML = "&#8634; Partial Return";
           partialBtn.addEventListener("click", function() { showPartialReturn(callId); });
           btnRow.appendChild(partialBtn);
-        } else {
-          // Legacy call — close only updates the call doc, not equipment
+        }
+
+        // Add equipment button
+        const addBtn = document.createElement("button");
+        addBtn.style.cssText = "flex:1;padding:10px;background:rgba(124,200,232,.15);color:var(--sky);border:1px solid rgba(124,200,232,.3);border-radius:7px;font-family:'Barlow Condensed',sans-serif;font-size:.82rem;font-weight:700;text-transform:uppercase;cursor:pointer;letter-spacing:.04em;";
+        addBtn.innerHTML = "&#43; Add Item";
+        addBtn.addEventListener("click", function() { showAddToCall(callId); });
+        btnRow.appendChild(addBtn);
+        card.appendChild(btnRow);
+
+        // Hero close button — last
+        if (!isLegacy) {
           const closeBtn = document.createElement("button");
-          closeBtn.className = "close-call-btn";
-          closeBtn.style.flex = "1";
+          closeBtn.className = "submit-checkout-btn";
+          closeBtn.style.cssText = "width:100%;margin-top:8px;";
+          closeBtn.innerHTML = "&#10003; Return All &amp; Close Call";
+          closeBtn.addEventListener("click", function() { closeCall(callId); });
+          card.appendChild(closeBtn);
+        } else {
+          const closeBtn = document.createElement("button");
+          closeBtn.className = "submit-checkout-btn";
+          closeBtn.style.cssText = "width:100%;margin-top:8px;opacity:.7;";
           closeBtn.innerHTML = "&#10003; Close Call";
           closeBtn.addEventListener("click", async function() {
             if (!confirm("Close Call #"+call.callNumber+"? (Equipment status won't be updated — legacy call)")) return;
             await updateDoc(doc(db,"calls",callId), { status:"closed", closedAt:serverTimestamp(), closedBy:currentUser.displayName||currentUser.email });
             showToast("Call #"+call.callNumber+" closed.");
           });
-          btnRow.appendChild(closeBtn);
+          card.appendChild(closeBtn);
         }
 
-        card.appendChild(btnRow);
         c.appendChild(card);
       });
     }
@@ -560,6 +569,103 @@
         alert("Error: " + e.message);
       }
     };
+
+    window.showAddToCall = function(callId) {
+      const call = activeCallsMap[callId];
+      if (!call) return;
+      const modal = document.getElementById("modal");
+      document.getElementById("modal-title").textContent = "Add to Call #" + call.callNumber;
+
+      const body = document.getElementById("modal-body");
+      body.innerHTML = `
+        <div class="form-group">
+          <label>Equipment Type</label>
+          <select id="atc-type" onchange="atcTypeChange()">
+            <option value="">— Select type —</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Specific Unit ID</label>
+          <select id="atc-id" disabled>
+            <option value="">— Select type first —</option>
+          </select>
+        </div>
+        <div id="atc-error" style="color:var(--red);font-size:.82rem;min-height:18px;"></div>
+      `;
+
+      // Populate type dropdown
+      const typeSel = document.getElementById("atc-type");
+      const currentItems = (call.items||[]).map(i=>i.firestoreId);
+      const typeNames = [...new Set(
+        Object.values(equipmentMap)
+          .filter(d => d.status === "available" && !currentItems.includes(Object.keys(equipmentMap).find(k=>equipmentMap[k]===d)))
+          .map(d => d.name)
+      )].sort();
+      typeNames.forEach(name => {
+        const opt = document.createElement("option");
+        opt.value = name; opt.textContent = name;
+        typeSel.appendChild(opt);
+      });
+
+      document.getElementById("modal-confirm").textContent = "Add to Call";
+      document.getElementById("modal-confirm").style.display = "";
+      document.getElementById("modal-confirm").onclick = () => confirmAddToCall(callId);
+      modal.style.display = "flex";
+    };
+
+    window.atcTypeChange = function() {
+      const name  = document.getElementById("atc-type")?.value;
+      const idSel = document.getElementById("atc-id");
+      idSel.innerHTML = "";
+      if (!name) { idSel.innerHTML='<option value="">— Select type first —</option>'; idSel.disabled=true; return; }
+
+      const available = Object.entries(equipmentMap)
+        .filter(([,d]) => d.name===name && d.status==="available")
+        .sort((a,b) => (a[1].eqId||"").localeCompare(b[1].eqId||"", undefined, {numeric:true}));
+
+      if (!available.length) { idSel.innerHTML='<option value="">None available</option>'; idSel.disabled=true; return; }
+      idSel.disabled = false;
+      idSel.innerHTML = '<option value="">— Select unit —</option>';
+      available.forEach(([id, d]) => {
+        const opt = document.createElement("option");
+        opt.value = id; opt.textContent = d.eqId || id;
+        idSel.appendChild(opt);
+      });
+      if (available.length === 1) { idSel.value = available[0][0]; idSel.style.borderColor="var(--sky)"; }
+    };
+
+    async function confirmAddToCall(callId) {
+      const firestoreId = document.getElementById("atc-id")?.value;
+      const err = document.getElementById("atc-error");
+      if (!firestoreId) { err.textContent = "Select a unit."; return; }
+      const d = equipmentMap[firestoreId];
+      if (!d) { err.textContent = "Item not found."; return; }
+      if (d.status !== "available") { err.textContent = d.eqId + " is no longer available."; return; }
+
+      const call = activeCallsMap[callId];
+      if (!call) { err.textContent = "Call not found."; return; }
+
+      const newItem = { firestoreId, name: d.name, eqId: d.eqId||"" };
+      const updatedItems = [...(call.items||[]), newItem];
+
+      try {
+        const batch = writeBatch(db);
+        batch.update(doc(db,"equipment",firestoreId), { status:"out" });
+        batch.update(doc(db,"calls",callId), { items: updatedItems });
+        await batch.commit();
+        await addLog({
+          action: "ITEM_ADDED_TO_CALL",
+          callNumber: call.callNumber,
+          equipmentName: d.name + " (" + (d.eqId||firestoreId) + ")",
+          userId: currentUser.uid,
+          userName: currentUser.displayName||currentUser.email
+        });
+        closeModal();
+        showToast((d.eqId||d.name) + " added to Call #" + call.callNumber);
+      } catch(e) {
+        err.textContent = "Error: " + e.message;
+      }
+    }
 
     window.showPartialReturn = function(callId) {
       const call = activeCallsMap[callId];
