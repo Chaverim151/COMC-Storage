@@ -1888,6 +1888,56 @@
     .scanner-box{width:200px;height:200px;border:3px solid var(--sky);border-radius:12px;box-shadow:0 0 0 9999px rgba(0,0,0,.45);}
     #scanner-status{text-align:center;color:var(--muted);font-size:.85rem;margin-top:12px;padding:8px;min-height:36px;}
 
+    /* REPORT BUTTONS */
+    .report-group { margin-bottom: 20px; }
+    .report-group-title {
+      font-family: 'Barlow Condensed', sans-serif;
+      font-size: .72rem; font-weight: 700;
+      color: var(--muted); letter-spacing: .12em;
+      text-transform: uppercase; margin-bottom: 8px;
+    }
+    .report-row { display: flex; gap: 10px; }
+    .report-btn {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 18px 12px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      cursor: pointer;
+      transition: transform .1s, opacity .15s;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .report-btn:active { transform: scale(.97); opacity: .85; }
+    .report-pdf {
+      background: rgba(240,80,80,.12);
+      border-color: rgba(240,80,80,.3);
+    }
+    .report-excel {
+      background: rgba(72,199,142,.12);
+      border-color: rgba(72,199,142,.3);
+    }
+    .report-icon { font-size: 1.8rem; line-height: 1; }
+    .report-label {
+      font-family: 'Barlow Condensed', sans-serif;
+      font-size: .88rem; font-weight: 700;
+      color: var(--text); text-align: center;
+      text-transform: uppercase; letter-spacing: .04em;
+      line-height: 1.3;
+    }
+    .report-label span {
+      display: block;
+      font-size: .72rem;
+      font-weight: 600;
+      letter-spacing: .1em;
+      margin-top: 2px;
+    }
+    .report-pdf   .report-label span { color: var(--red); }
+    .report-excel .report-label span { color: var(--green); }
+
     /* TOAST */
     #toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(80px);background:var(--steel);color:#fff;padding:10px 20px;border-radius:20px;font-size:.88rem;font-weight:600;opacity:0;transition:opacity .3s,transform .3s;z-index:9999;pointer-events:none;}
     #toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
@@ -2007,38 +2057,48 @@
 
   <!-- REPORTS -->
   <div id="tab-reports" class="tab-content">
-    <div class="section-label">&#128202; Generate Reports</div>
-    <div class="btn-group" style="gap:8px;margin-bottom:20px;">
-      <button class="btn" onclick="generateReport('inventory','pdf')">
-        <div class="icon icon-red">&#128196;</div>
-        <div class="label">Inventory Report — PDF<small>Current status of all equipment</small></div>
-        <div class="arrow">&#8250;</div>
-      </button>
-      <button class="btn" onclick="generateReport('inventory','excel')">
-        <div class="icon icon-green">&#128202;</div>
-        <div class="label">Inventory Report — Excel<small>Current status of all equipment</small></div>
-        <div class="arrow">&#8250;</div>
-      </button>
-      <button class="btn" onclick="generateReport('log','pdf')">
-        <div class="icon icon-red">&#128196;</div>
-        <div class="label">Activity Log — PDF<small>Full history of all actions</small></div>
-        <div class="arrow">&#8250;</div>
-      </button>
-      <button class="btn" onclick="generateReport('log','excel')">
-        <div class="icon icon-green">&#128202;</div>
-        <div class="label">Activity Log — Excel<small>Full history of all actions</small></div>
-        <div class="arrow">&#8250;</div>
-      </button>
-      <button class="btn" onclick="generateReport('missing','pdf')">
-        <div class="icon icon-orange">&#10067;</div>
-        <div class="label">Missing Equipment — PDF<small>Items marked as missing</small></div>
-        <div class="arrow">&#8250;</div>
-      </button>
-      <button class="btn" onclick="generateReport('missing','excel')">
-        <div class="icon icon-orange">&#10067;</div>
-        <div class="label">Missing Equipment — Excel<small>Items marked as missing</small></div>
-        <div class="arrow">&#8250;</div>
-      </button>
+    <div class="section-label">📊 Generate Reports</div>
+
+    <div class="report-group">
+      <div class="report-group-title">Inventory</div>
+      <div class="report-row">
+        <button class="report-btn report-pdf" onclick="generateReport('inventory','pdf')">
+          <div class="report-icon">📄</div>
+          <div class="report-label">Inventory Report<span>PDF</span></div>
+        </button>
+        <button class="report-btn report-excel" onclick="generateReport('inventory','excel')">
+          <div class="report-icon">📊</div>
+          <div class="report-label">Inventory Report<span>Excel</span></div>
+        </button>
+      </div>
+    </div>
+
+    <div class="report-group">
+      <div class="report-group-title">Activity Log</div>
+      <div class="report-row">
+        <button class="report-btn report-pdf" onclick="generateReport('log','pdf')">
+          <div class="report-icon">📄</div>
+          <div class="report-label">Activity Log<span>PDF</span></div>
+        </button>
+        <button class="report-btn report-excel" onclick="generateReport('log','excel')">
+          <div class="report-icon">📊</div>
+          <div class="report-label">Activity Log<span>Excel</span></div>
+        </button>
+      </div>
+    </div>
+
+    <div class="report-group">
+      <div class="report-group-title">Missing Equipment</div>
+      <div class="report-row">
+        <button class="report-btn report-pdf" onclick="generateReport('missing','pdf')">
+          <div class="report-icon">📄</div>
+          <div class="report-label">Missing Equipment<span>PDF</span></div>
+        </button>
+        <button class="report-btn report-excel" onclick="generateReport('missing','excel')">
+          <div class="report-icon">📊</div>
+          <div class="report-label">Missing Equipment<span>Excel</span></div>
+        </button>
+      </div>
     </div>
   </div>
 </div>
