@@ -204,13 +204,14 @@
           else if (l.includes("fan"))      category = "Fans";
           else if (l.includes("ez spare")) category = "EZ Spares";
           else if (l.includes("spare"))    category = "Spares";
-          else category = "Other";
+          else category = d.name; // use actual equipment name
 
-          if (!summary[category]) summary[category] = { total:0, available:0, out:0, broken:0 };
+          if (!summary[category]) summary[category] = { total:0, available:0, out:0, broken:0, missing:0 };
           summary[category].total++;
-          if (d.status==="available") summary[category].available++;
-          else if (d.status==="out")    summary[category].out++;
-          else if (d.status==="broken") summary[category].broken++;
+          if (d.status==="available")    summary[category].available++;
+          else if (d.status==="out")     summary[category].out++;
+          else if (d.status==="broken")  summary[category].broken++;
+          else if (d.status==="missing") summary[category].missing++;
         });
 
         const summaryCard = document.createElement("div");
@@ -220,16 +221,20 @@
           <div class="summary-grid">
             ${Object.entries(summary)
               .sort((a,b) => {
-                const order = ["AC Units","Heaters","Fans","EZ Spares","Spares","Other"];
-                return order.indexOf(a[0]) - order.indexOf(b[0]);
+                const order = ["AC Units","Heaters","Fans","EZ Spares","Spares"];
+                const ai = order.indexOf(a[0]), bi = order.indexOf(b[0]);
+                if (ai===-1 && bi===-1) return a[0].localeCompare(b[0]);
+                if (ai===-1) return 1; if (bi===-1) return -1;
+                return ai - bi;
               })
               .map(([cat, s]) => `
                 <div class="summary-row">
                   <div class="summary-name">${cat}</div>
                   <div class="summary-stats">
                     <span class="sum-avail">&#10003; ${s.available} avail</span>
-                    ${s.out    ? `<span class="sum-out">&#8599; ${s.out} out</span>` : ""}
-                    ${s.broken ? `<span class="sum-broken">&#128683; ${s.broken} broken</span>` : ""}
+                    ${s.out     ? `<span class="sum-out">&#8599; ${s.out} out</span>` : ""}
+                    ${s.broken  ? `<span class="sum-broken">&#128683; ${s.broken} broken</span>` : ""}
+                    ${s.missing ? `<span class="sum-missing">&#10067; ${s.missing} missing</span>` : ""}
                     <span class="sum-total">${s.total} total</span>
                   </div>
                 </div>
@@ -254,8 +259,8 @@
         container.appendChild(label);
 
         list.forEach(([id, d]) => {
-          const statusColor = d.status==="out" ? "status-out" : d.status==="broken" ? "status-broken" : "status-ok";
-          const statusText  = d.status==="out" ? "OUT" : d.status==="broken" ? "BROKEN" : "AVAIL";
+          const statusColor = d.status==="out" ? "status-out" : d.status==="broken" ? "status-broken" : d.status==="missing" ? "status-missing" : "status-ok";
+          const statusText  = d.status==="out" ? "OUT" : d.status==="broken" ? "BROKEN" : d.status==="missing" ? "MISSING" : "AVAIL";
           const card = document.createElement("div");
           card.className = "eq-card";
           card.innerHTML = `
@@ -277,6 +282,7 @@
               ${d.reorderLink ? `<a href="${d.reorderLink}" target="_blank" class="eq-btn btn-reorder">&#128722; Reorder</a>` : ""}
               <span class="admin-only" style="display:${currentRole==="admin"?"contents":"none"}">
                 <button class="eq-btn btn-broken" onclick="markBroken('${id}','${d.name}')" ${d.status==="broken"?"disabled":""}>&#128683; Broken</button>
+                <button class="eq-btn btn-missing" onclick="markMissing('${id}','${d.name}')" ${d.status==="missing"?"disabled":""}>&#10067; Missing</button>
                 ${d.eqId ? `<button class="eq-btn btn-qr" onclick="showQRModal('${d.eqId}','${d.name}')">&#9638; QR</button>` : ""}
                 <button class="eq-btn btn-edit" onclick="editEquipment('${id}')">&#9998; Edit</button>
               </span>
@@ -1238,6 +1244,7 @@
             <option value="available" ${d.status==="available"?"selected":""}>Available</option>
             <option value="out"       ${d.status==="out"      ?"selected":""}>Out</option>
             <option value="broken"    ${d.status==="broken"   ?"selected":""}>Broken</option>
+            <option value="missing"   ${d.status==="missing"  ?"selected":""}>Missing</option>
           </select>
         </div>
         <div class="form-group"><label>Manufacturer</label>
@@ -1285,6 +1292,14 @@
       await deleteDoc(doc(db,"equipment",id));
       await addLog({ action:"DELETED", equipmentName:name, userId:currentUser.uid, userName:currentUser.displayName||currentUser.email });
       closeModal();
+    };
+
+    window.markMissing = function(id, name) {
+      if (!confirm("Mark " + name + " as missing?")) return;
+      updateDoc(doc(db,"equipment",id), { status:"missing" }).then(() => {
+        addLog({ action:"MISSING", equipmentName:name, userId:currentUser.uid, userName:currentUser.displayName||currentUser.email });
+        showToast(name + " marked as missing.");
+      }).catch(e => alert("Error: " + e.message));
     };
 
     window.markBroken = function(id, name) {
@@ -1352,34 +1367,125 @@
 
     function loadLog() {
       const c = document.getElementById("log-list");
+      if (!c) return;
       c.innerHTML = '<div class="loading">Loading...</div>';
-      const u = onSnapshot(query(collection(db,"log"),orderBy("timestamp","desc")), snap => {
-        c.innerHTML = "";
-        if (snap.empty) { c.innerHTML='<div class="empty">No activity yet.</div>'; return; }
-        snap.forEach(d => {
-          const data = d.data();
-          const ts   = data.timestamp?.toDate();
-          const time = ts ? ts.toLocaleString() : "—";
-          const cls  = {CALL_OPENED:"log-out",CALL_CLOSED:"log-in",CHECK_IN:"log-in",
-                        BROKEN:"log-broken",ADDED:"log-added",BULK_ADDED:"log-added",
-                        EDITED:"log-edited",DELETED:"log-deleted",MIGRATED:"log-added"}[data.action]||"";
-          const row = document.createElement("div");
-          row.className = "log-row "+cls;
-          row.innerHTML = `
-            <div class="log-action">${(data.action||"").replace(/_/g," ")}</div>
-            <div class="log-detail">
-              ${data.callNumber?"<strong>Call #"+data.callNumber+"</strong> ":""}
-              ${data.equipmentName?"<strong>"+data.equipmentName+"</strong>":""}
-              ${data.items?" &mdash; "+data.items:""}
-              ${data.memberName?" &bull; "+data.memberName:""}
-              ${data.location?" &bull; "+data.location:""}
-            </div>
-            <div class="log-meta">${data.userName||""} &bull; ${time}</div>
-          `;
-          c.appendChild(row);
-        });
-      });
+      const u = onSnapshot(query(collection(db,"log"),orderBy("timestamp","desc")),
+        snap => {
+          c.innerHTML = "";
+          if (snap.empty) { c.innerHTML='<div class="empty">No activity yet.</div>'; return; }
+          snap.forEach(d => {
+            const data = d.data();
+            const ts   = data.timestamp?.toDate();
+            const time = ts ? ts.toLocaleString() : "—";
+            const cls  = {
+              CALL_OPENED:"log-out", CALL_CLOSED:"log-in", CHECK_IN:"log-in",
+              PARTIAL_RETURN:"log-in", ITEM_ADDED_TO_CALL:"log-out",
+              BROKEN:"log-broken", MISSING:"log-broken",
+              ADDED:"log-added", BULK_ADDED:"log-added",
+              EDITED:"log-edited", DELETED:"log-deleted",
+              USER_ADDED:"log-added", USER_EDITED:"log-edited", USER_REMOVED:"log-deleted",
+              IDS_GENERATED:"log-added", FORCE_CLOSED:"log-edited"
+            }[data.action] || "";
+            const row = document.createElement("div");
+            row.className = "log-row "+cls;
+            row.innerHTML = `
+              <div class="log-action">${(data.action||"").replace(/_/g," ")}</div>
+              <div class="log-detail">
+                ${data.callNumber?"<strong>Call #"+data.callNumber+"</strong> ":""}
+                ${data.equipmentName?"<strong>"+data.equipmentName+"</strong>":""}
+                ${data.items?" &mdash; "+data.items:""}
+                ${data.memberName?" &bull; "+data.memberName:""}
+                ${data.location?" &bull; "+data.location:""}
+              </div>
+              <div class="log-meta">${data.userName||""} &bull; ${time}</div>
+            `;
+            c.appendChild(row);
+          });
+        },
+        err => {
+          console.error("loadLog error:", err);
+          c.innerHTML = '<div class="empty" style="color:var(--red)">Error: ' + err.message + '</div>';
+        }
+      );
       unsubs.push(u);
+    }
+
+    // ── REPORTS ──────────────────────────────────────────────────
+    window.generateReport = async function(type, format) {
+      showToast("Generating report…");
+      let headers = [], rows = [], title = "";
+
+      if (type === "inventory") {
+        title = "COMC Equipment Inventory — " + new Date().toLocaleDateString();
+        headers = ["ID","Name","Status","Manufacturer","Model","Value","Place of Purchase"];
+        Object.entries(equipmentMap)
+          .sort((a,b)=>(a[1].eqId||"").localeCompare(b[1].eqId||"",undefined,{numeric:true}))
+          .forEach(([,d]) => rows.push([
+            d.eqId||"", d.name||"", (d.status||"").toUpperCase(),
+            d.manufacturer||"", d.modelNumber||"",
+            d.replacementValue?"$"+parseFloat(d.replacementValue).toFixed(2):"",
+            d.placeOfPurchase||""
+          ]));
+      } else if (type === "missing") {
+        title = "COMC Missing Equipment — " + new Date().toLocaleDateString();
+        headers = ["ID","Name","Manufacturer","Model","Replacement Value","Place of Purchase"];
+        const missing = Object.entries(equipmentMap).filter(([,d])=>d.status==="missing");
+        if (!missing.length) { showToast("No missing equipment."); return; }
+        missing.sort((a,b)=>(a[1].eqId||"").localeCompare(b[1].eqId||"",undefined,{numeric:true}))
+          .forEach(([,d]) => rows.push([
+            d.eqId||"", d.name||"", d.manufacturer||"", d.modelNumber||"",
+            d.replacementValue?"$"+parseFloat(d.replacementValue).toFixed(2):"",
+            d.placeOfPurchase||""
+          ]));
+      } else if (type === "log") {
+        title = "COMC Activity Log — " + new Date().toLocaleDateString();
+        headers = ["Date/Time","Action","Equipment","Call #","Location","Member","Items/Notes","By"];
+        const snap = await getDocs(query(collection(db,"log"),orderBy("timestamp","desc")));
+        snap.forEach(d => {
+          const data=d.data(), ts=data.timestamp?.toDate();
+          rows.push([ts?ts.toLocaleString():"", (data.action||"").replace(/_/g," "),
+            data.equipmentName||"", data.callNumber||"", data.location||"",
+            data.memberName||"", data.items||data.notes||"", data.userName||""]);
+        });
+      }
+
+      if (format==="excel") {
+        if (!window.JSZip) {
+          const s=document.createElement("script");
+          s.src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js";
+          s.onload=()=>buildAndDownloadXlsx(headers,rows,type);
+          document.head.appendChild(s);
+        } else buildAndDownloadXlsx(headers,rows,type);
+      } else {
+        buildPdfReport(headers,rows,title,type);
+      }
+    };
+
+    function buildPdfReport(headers, rows, title, filename) {
+      const tableRows = rows.map(row =>
+        `<tr>${row.map(c=>`<td>${String(c||"").replace(/&/g,"&amp;").replace(/</g,"&lt;")}</td>`).join("")}</tr>`
+      ).join("");
+      const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>${title}</title>
+        <style>
+          body{font-family:Arial,sans-serif;font-size:11px;padding:20px;color:#222;}
+          h2{font-size:15px;margin-bottom:2px;color:#1e3040;}
+          .sub{font-size:10px;color:#888;margin-bottom:14px;}
+          table{width:100%;border-collapse:collapse;}
+          th{background:#4A7FA5;color:#fff;padding:6px 8px;text-align:left;font-size:9px;text-transform:uppercase;letter-spacing:.05em;}
+          td{padding:5px 8px;border-bottom:1px solid #eee;font-size:10px;word-break:break-word;}
+          tr:nth-child(even) td{background:#f5f8fb;}
+          @media print{body{padding:0;}}
+        </style>
+      </head><body>
+        <h2>${title}</h2>
+        <div class="sub">Generated: ${new Date().toLocaleString()} &bull; ${rows.length} records</div>
+        <table><thead><tr>${headers.map(h=>`<th>${h}</th>`).join("")}</tr></thead>
+        <tbody>${tableRows}</tbody></table>
+        <script>setTimeout(()=>window.print(),600);<\/script>
+      </body></html>`;
+      const w = window.open("","_blank");
+      if (w) { w.document.write(html); w.document.close(); }
+      else showToast("Allow popups to generate PDF.");
     }
 
     window.exportLog = async function() {
@@ -1627,9 +1733,12 @@
     .eq-name{font-size:.95rem;font-weight:600;}
     .eq-id-badge{font-family:'Barlow Condensed',sans-serif;font-size:.8rem;font-weight:700;color:var(--sky);letter-spacing:.06em;margin-top:2px;}
     .eq-badge{font-family:'Barlow Condensed',sans-serif;font-size:.72rem;font-weight:700;letter-spacing:.08em;padding:3px 8px;border-radius:20px;flex-shrink:0;}
-    .status-ok    {background:rgba(72,199,142,.2);color:var(--green);}
-    .status-out   {background:rgba(255,189,0,.2);color:var(--yellow);}
-    .status-broken{background:rgba(240,80,80,.2);color:var(--red);}
+    .status-ok     {background:rgba(72,199,142,.2);color:var(--green);}
+    .status-out    {background:rgba(255,189,0,.2);color:var(--yellow);}
+    .status-broken {background:rgba(240,80,80,.2);color:var(--red);}
+    .status-missing{background:rgba(232,112,64,.2);color:var(--orange);}
+    .sum-missing   {font-size:.72rem;color:var(--orange);font-weight:700;background:rgba(232,112,64,.15);padding:3px 8px;border-radius:20px;}
+    .btn-missing   {background:rgba(232,112,64,.15);color:var(--orange);}
     .broken-note{font-size:.78rem;color:var(--red);margin-bottom:8px;}
 
     /* SUMMARY CARD */
@@ -1822,8 +1931,9 @@
     <div class="tab active" data-tab="checkout"  onclick="switchTab('checkout',this)">&#128229; Check Out</div>
     <div class="tab"        data-tab="checkin"   onclick="switchTab('checkin',this)">&#128228; Check In</div>
     <div class="tab"        data-tab="inventory" onclick="switchTab('inventory',this)">&#128230; Inventory</div>
-    <div class="tab admin-only" data-tab="users" onclick="switchTab('users',this)">&#128101; Users</div>
-    <div class="tab"        data-tab="log"       onclick="switchTab('log',this)">&#128203; Log</div>
+    <div class="tab admin-only" data-tab="users"    onclick="switchTab('users',this)">&#128101; Users</div>
+    <div class="tab"            data-tab="log"      onclick="switchTab('log',this)">&#128203; Log</div>
+    <div class="tab admin-only" data-tab="reports"  onclick="switchTab('reports',this)">&#128196; Reports</div>
   </div>
 
   <!-- CHECK OUT -->
@@ -1889,10 +1999,47 @@
 
   <!-- LOG -->
   <div id="tab-log" class="tab-content">
-    <div class="toolbar admin-only">
+    <div class="toolbar admin-only" style="margin-bottom:16px;">
       <button class="tbtn tbtn-muted" onclick="exportLog()" style="width:100%">&#11015; Export Log as Excel</button>
     </div>
-    <div id="log-list"></div>
+    <div id="log-list"><div class="loading">Loading...</div></div>
+  </div>
+
+  <!-- REPORTS -->
+  <div id="tab-reports" class="tab-content">
+    <div class="section-label">&#128202; Generate Reports</div>
+    <div class="btn-group" style="gap:8px;margin-bottom:20px;">
+      <button class="btn" onclick="generateReport('inventory','pdf')">
+        <div class="icon icon-red">&#128196;</div>
+        <div class="label">Inventory Report — PDF<small>Current status of all equipment</small></div>
+        <div class="arrow">&#8250;</div>
+      </button>
+      <button class="btn" onclick="generateReport('inventory','excel')">
+        <div class="icon icon-green">&#128202;</div>
+        <div class="label">Inventory Report — Excel<small>Current status of all equipment</small></div>
+        <div class="arrow">&#8250;</div>
+      </button>
+      <button class="btn" onclick="generateReport('log','pdf')">
+        <div class="icon icon-red">&#128196;</div>
+        <div class="label">Activity Log — PDF<small>Full history of all actions</small></div>
+        <div class="arrow">&#8250;</div>
+      </button>
+      <button class="btn" onclick="generateReport('log','excel')">
+        <div class="icon icon-green">&#128202;</div>
+        <div class="label">Activity Log — Excel<small>Full history of all actions</small></div>
+        <div class="arrow">&#8250;</div>
+      </button>
+      <button class="btn" onclick="generateReport('missing','pdf')">
+        <div class="icon icon-orange">&#10067;</div>
+        <div class="label">Missing Equipment — PDF<small>Items marked as missing</small></div>
+        <div class="arrow">&#8250;</div>
+      </button>
+      <button class="btn" onclick="generateReport('missing','excel')">
+        <div class="icon icon-orange">&#10067;</div>
+        <div class="label">Missing Equipment — Excel<small>Items marked as missing</small></div>
+        <div class="arrow">&#8250;</div>
+      </button>
+    </div>
   </div>
 </div>
 
