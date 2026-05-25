@@ -1369,11 +1369,19 @@
       const c = document.getElementById("log-list");
       if (!c) return;
       c.innerHTML = '<div class="loading">Loading...</div>';
-      const u = onSnapshot(query(collection(db,"log"),orderBy("timestamp","desc")),
+      const u = onSnapshot(collection(db,"log"),
         snap => {
           c.innerHTML = "";
           if (snap.empty) { c.innerHTML='<div class="empty">No activity yet.</div>'; return; }
-          snap.forEach(d => {
+          // Sort client-side to avoid needing a Firestore index
+          const docs = [];
+          snap.forEach(d => docs.push(d));
+          docs.sort((a,b) => {
+            const ta = a.data().timestamp?.seconds || 0;
+            const tb = b.data().timestamp?.seconds || 0;
+            return tb - ta;
+          });
+          docs.forEach(d => {
             const data = d.data();
             const ts   = data.timestamp?.toDate();
             const time = ts ? ts.toLocaleString() : "—";
