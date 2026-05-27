@@ -283,7 +283,7 @@
               <span class="admin-only" style="display:${currentRole==="admin"?"contents":"none"}">
                 <button class="eq-btn btn-broken" onclick="markBroken('${id}','${d.name}')" ${d.status==="broken"?"disabled":""}>&#128683; Broken</button>
                 <button class="eq-btn btn-missing" onclick="markMissing('${id}','${d.name}')" ${d.status==="missing"?"disabled":""}>&#10067; Missing</button>
-                ${d.eqId ? `<button class="eq-btn btn-qr" onclick="showQRModal('${d.eqId}','${d.name}')">&#9638; QR</button>` : ""}
+                ${d.eqId ? `<button class="eq-btn btn-qr" onclick="showQRById('${id}')">&#9638; QR</button>` : ""}
                 <button class="eq-btn btn-edit" onclick="editEquipment('${id}')">&#9998; Edit</button>
               </span>
             </div>
@@ -1083,6 +1083,12 @@
     }
 
     // ── QR CODE MODAL ─────────────────────────────────────────────
+    window.showQRById = function(firestoreId) {
+      const d = equipmentMap[firestoreId];
+      if (!d || !d.eqId) { showToast("No equipment ID assigned yet."); return; }
+      showQRModal(d.eqId, d.name);
+    };
+
     window.showQRModal = function(eqId, name) {
       const modal = document.getElementById("modal");
       document.getElementById("modal-title").textContent = eqId;
@@ -1090,14 +1096,25 @@
         <div style="text-align:center">
           <div id="qr-container" style="background:#fff;padding:16px;border-radius:8px;display:inline-block;margin-bottom:10px"></div>
           <div style="font-family:'Barlow Condensed',sans-serif;font-size:1rem;font-weight:700;color:var(--text)">${name}</div>
-          <button class="tbtn tbtn-muted" style="width:100%;margin-top:12px" onclick="printQR('${eqId}','${name.replace(/'/g,"\\'")}')">&#128438; Print Label</button>
+          <button class="tbtn tbtn-muted" id="print-qr-btn" style="width:100%;margin-top:12px">&#128438; Print Label</button>
         </div>
       `;
       document.getElementById("modal-confirm").style.display = "none";
       modal.style.display = "flex";
+
+      // Store eqId/name on button to avoid string escaping issues
+      const printBtn = document.getElementById("print-qr-btn");
+      printBtn.addEventListener("click", function() { printQR(eqId, name); });
+
       loadQRLib(() => {
-        document.getElementById("qr-container").innerHTML = "";
-        new QRCode(document.getElementById("qr-container"), { text:"COMC:"+eqId, width:180, height:180, colorDark:"#000", colorLight:"#fff" });
+        const container = document.getElementById("qr-container");
+        if (!container) return;
+        container.innerHTML = "";
+        new QRCode(container, {
+          text: "COMC:" + eqId,
+          width: 180, height: 180,
+          colorDark: "#000000", colorLight: "#ffffff"
+        });
       });
     };
 
@@ -1257,7 +1274,7 @@
           <input id="m-purchase" type="text" value="${d.placeOfPurchase||""}" placeholder="e.g. Home Depot"></div>
         <div class="form-group"><label>Reorder Link</label>
           <input id="m-reorder" type="url" value="${d.reorderLink||""}" placeholder="https://..."></div>
-        ${d.eqId?`<button class="tbtn tbtn-muted" style="width:100%;margin-bottom:8px" onclick="showQRModal('${d.eqId}','${d.name}')">&#9638; View QR Code</button>`:""}
+        ${d.eqId?`<button class="tbtn tbtn-muted" style="width:100%;margin-bottom:8px" onclick="showQRById('${id}')">&#9638; View QR Code</button>`:""}
         <button class="delete-btn" onclick="deleteEquipment('${id}')">&#128465; Delete Unit</button>
       `;
       document.getElementById("modal-confirm").textContent = "Save";
@@ -1373,14 +1390,9 @@
         snap => {
           c.innerHTML = "";
           if (snap.empty) { c.innerHTML='<div class="empty">No activity yet.</div>'; return; }
-          // Sort client-side to avoid needing a Firestore index
           const docs = [];
           snap.forEach(d => docs.push(d));
-          docs.sort((a,b) => {
-            const ta = a.data().timestamp?.seconds || 0;
-            const tb = b.data().timestamp?.seconds || 0;
-            return tb - ta;
-          });
+          docs.sort((a,b) => (b.data().timestamp?.seconds||0) - (a.data().timestamp?.seconds||0));
           docs.forEach(d => {
             const data = d.data();
             const ts   = data.timestamp?.toDate();
@@ -1417,6 +1429,7 @@
       );
       unsubs.push(u);
     }
+    window.reloadLog = loadLog;
 
     // ── REPORTS ──────────────────────────────────────────────────
     window.generateReport = async function(type, format) {
@@ -2148,8 +2161,8 @@
     document.querySelectorAll(".tab-content").forEach(t=>t.classList.remove("active"));
     if(el) el.classList.add("active");
     document.getElementById("tab-"+name).classList.add("active");
-    // Refresh users list every time the tab is opened
     if (name === "users" && window.loadUsers) window.loadUsers();
+    if (name === "log"   && window.reloadLog) window.reloadLog();
   }
 </script>
 </body>
