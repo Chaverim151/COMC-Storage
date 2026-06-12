@@ -5,7 +5,29 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
   <title>COMC Equipment Manager</title>
   <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800&family=Barlow:wght@400;500;600&display=swap" rel="stylesheet">
-  <!-- jsQR with fallback CDNs -->
+  <!-- Google Places Autocomplete -->
+  <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyAFAsM0xqmKrnirTKIH9If2s4GuDpmO6BQ&libraries=places" async defer
+    onload="initAutocomplete()"></script>
+  <script>
+    function initAutocomplete() {
+      var input = document.getElementById("co-location");
+      if (!input || !window.google) return;
+      var ac = new google.maps.places.Autocomplete(input, {
+        types: ["geocode"],
+        componentRestrictions: { country: "us" }
+      });
+      ac.addListener("place_changed", function() {
+        var place = ac.getPlace();
+        if (place && place.formatted_address) {
+          input.value = place.formatted_address;
+        }
+      });
+    }
+    // Retry if element not ready yet
+    document.addEventListener("DOMContentLoaded", function() {
+      if (window.google && window.google.maps) initAutocomplete();
+    });
+  </script>
   <script>
     function loadScript(urls, idx) {
       if (idx >= urls.length) { console.error("All jsQR CDNs failed"); return; }
@@ -126,12 +148,17 @@
       document.getElementById("user-name").textContent = currentUser.displayName || currentUser.email;
       document.getElementById("user-role").textContent = currentRole==="admin" ? "Admin" : "Member";
       document.querySelectorAll(".admin-only").forEach(el => el.style.display = currentRole==="admin" ? "" : "none");
+      document.querySelectorAll(".member-only").forEach(el => el.style.display = currentRole==="member" ? "" : "none");
       const memberField = document.getElementById("co-member");
       if (memberField) memberField.value = currentUser.displayName || "";
       loadEquipment();
       loadCalls();
-      loadLog();
-      window.loadUsers(); // always load, the tab is hidden for non-admins anyway
+      if (currentRole==="admin") {
+        loadLog();
+        window.loadUsers();
+      } else {
+        loadMyCalls();
+      }
     }
 
     // ── ID GENERATION ────────────────────────────────────────────
@@ -280,9 +307,9 @@
             ${d.status==="broken" && d.brokenNote ? `<div class="broken-note">&#128683; ${d.brokenNote}</div>` : ""}
             <div class="eq-actions" style="margin-top:8px;">
               ${d.reorderLink ? `<a href="${d.reorderLink}" target="_blank" class="eq-btn btn-reorder">&#128722; Reorder</a>` : ""}
+              <button class="eq-btn btn-broken" onclick="markBroken('${id}','${d.name}')" ${d.status==="broken"?"disabled":""}>&#128683; Broken</button>
+              <button class="eq-btn btn-missing" onclick="markMissing('${id}','${d.name}')" ${d.status==="missing"?"disabled":""}>&#10067; Missing</button>
               <span class="admin-only" style="display:${currentRole==="admin"?"contents":"none"}">
-                <button class="eq-btn btn-broken" onclick="markBroken('${id}','${d.name}')" ${d.status==="broken"?"disabled":""}>&#128683; Broken</button>
-                <button class="eq-btn btn-missing" onclick="markMissing('${id}','${d.name}')" ${d.status==="missing"?"disabled":""}>&#10067; Missing</button>
                 ${d.eqId ? `<button class="eq-btn btn-qr" onclick="showQRById('${id}')">&#9638; QR</button>` : ""}
                 <button class="eq-btn btn-edit" onclick="editEquipment('${id}')">&#9998; Edit</button>
               </span>
@@ -403,6 +430,7 @@
       const callNum  = document.getElementById("co-callnum").value.trim();
       const location = document.getElementById("co-location").value.trim();
       const member   = document.getElementById("co-member").value.trim();
+      const phone    = document.getElementById("co-phone").value.trim();
       const notes    = document.getElementById("co-notes").value.trim();
       if (!callNum)  { alert("Call number required."); return; }
       if (!member)   { alert("Member name required."); return; }
@@ -424,11 +452,13 @@
       batch.set(callRef, {
         callNumber: callNum, location, memberName: member,
         memberUnit: currentUserUnit || "",
+        callerPhone: phone,
         notes, status: "open",
         items: checkoutItems.map(i => ({firestoreId:i.firestoreId, name:i.name, eqId:i.eqId})),
         openedBy: currentUser.displayName || currentUser.email,
         openedByUid: currentUser.uid,
         openedAt: serverTimestamp(),
+        reminderSent: false,
       });
       await batch.commit();
 
@@ -1159,6 +1189,8 @@
           <input id="m-purchase" type="text" placeholder="e.g. Home Depot"></div>
         <div class="form-group"><label>Reorder Link</label>
           <input id="m-reorder" type="url" placeholder="https://..."></div>
+        <div class="form-group"><label>Return Reminder (days)</label>
+          <input id="m-reminder" type="number" placeholder="e.g. 7 (0 = no reminder)" min="0" value="7"></div>
         <div style="font-size:.78rem;color:var(--muted);margin-bottom:4px;">
           Adding 1 unit. For multiple units use <strong>Bulk Add</strong>.
         </div>
@@ -1185,12 +1217,14 @@
       const value        = parseFloat(document.getElementById("m-value")?.value) || 0;
       const purchase     = document.getElementById("m-purchase")?.value.trim() || "";
       const reorder      = document.getElementById("m-reorder")?.value.trim() || "";
+      const reminderDays = parseInt(document.getElementById("m-reminder")?.value) || 0;
       if (!name || !eqId) { alert("Name and ID required."); return; }
       if (Object.values(equipmentMap).some(d=>d.eqId===eqId)) { alert(eqId+" already in use."); return; }
       await addDoc(collection(db,"equipment"), {
         name, eqId, status:"available",
         manufacturer, modelNumber, replacementValue: value,
         placeOfPurchase: purchase, reorderLink: reorder,
+        reminderDays,
         createdAt: serverTimestamp()
       });
       await addLog({ action:"ADDED", equipmentName:name+" ("+eqId+")", userId:currentUser.uid, userName:currentUser.displayName||currentUser.email });
@@ -1274,6 +1308,8 @@
           <input id="m-purchase" type="text" value="${d.placeOfPurchase||""}" placeholder="e.g. Home Depot"></div>
         <div class="form-group"><label>Reorder Link</label>
           <input id="m-reorder" type="url" value="${d.reorderLink||""}" placeholder="https://..."></div>
+        <div class="form-group"><label>Return Reminder (days, 0 = off)</label>
+          <input id="m-reminder" type="number" value="${d.reminderDays||7}" min="0"></div>
         ${d.eqId?`<button class="tbtn tbtn-muted" style="width:100%;margin-bottom:8px" onclick="showQRById('${id}')">&#9638; View QR Code</button>`:""}
         <button class="delete-btn" onclick="deleteEquipment('${id}')">&#128465; Delete Unit</button>
       `;
@@ -1292,11 +1328,13 @@
       const value        = parseFloat(document.getElementById("m-value")?.value) || 0;
       const purchase     = document.getElementById("m-purchase")?.value.trim() || "";
       const reorder      = document.getElementById("m-reorder")?.value.trim() || "";
+      const reminderDays = parseInt(document.getElementById("m-reminder")?.value) || 0;
       if (!name) { alert("Name required."); return; }
       await updateDoc(doc(db,"equipment",id), {
         name, eqId, status,
         manufacturer, modelNumber, replacementValue: value,
-        placeOfPurchase: purchase, reorderLink: reorder
+        placeOfPurchase: purchase, reorderLink: reorder,
+        reminderDays
       });
       await addLog({ action:"EDITED", equipmentName:name+" ("+eqId+")", userId:currentUser.uid, userName:currentUser.displayName||currentUser.email });
       closeModal();
@@ -1429,7 +1467,170 @@
       );
       unsubs.push(u);
     }
-    window.reloadLog = loadLog;
+    function loadMyCalls() {
+      const c = document.getElementById("mycalls-list");
+      if (!c) return;
+      c.innerHTML = '<div class="loading">Loading...</div>';
+      const u = onSnapshot(collection(db,"calls"), snap => {
+        c.innerHTML = "";
+        const calls = [];
+        snap.forEach(d => calls.push({id:d.id, ...d.data()}));
+        calls.sort((a,b) => (b.openedAt?.seconds||0) - (a.openedAt?.seconds||0));
+        if (!calls.length) { c.innerHTML='<div class="empty">No calls yet.</div>'; return; }
+
+        // Section labels
+        const open   = calls.filter(c => c.status==="open");
+        const closed = calls.filter(c => c.status!=="open");
+
+        function renderCall(call) {
+          const ts     = call.openedAt?.toDate();
+          const time   = ts ? ts.toLocaleString() : "—";
+          const isOpen = call.status === "open";
+          const card   = document.createElement("div");
+          card.className = "call-card";
+          card.style.borderLeftColor = isOpen ? "var(--yellow)" : "var(--green)";
+          card.innerHTML = `
+            <div class="call-header">
+              <div class="call-num">Call #${call.callNumber}</div>
+              <div class="call-status-badge" style="background:${isOpen?"rgba(255,189,0,.2)":"rgba(72,199,142,.2)"};color:${isOpen?"var(--yellow)":"var(--green)"}">
+                ${isOpen?"OPEN":"CLOSED"}
+              </div>
+            </div>
+            <div class="call-meta-row">
+              ${call.memberName ? `<span>&#128100; ${call.memberName}${call.memberUnit?" (MC-"+call.memberUnit+")":""}</span>` : ""}
+              ${call.location   ? `<span>&#128205; ${call.location}</span>` : ""}
+              <span>&#128336; ${time}</span>
+            </div>
+            <div class="call-items-wrap">
+              <div class="call-items-label">Equipment:</div>
+              ${(call.items||[]).map(i=>`
+                <div class="call-item">
+                  <span class="call-item-name">${i.name} <span class="call-item-eqid">${i.eqId||""}</span></span>
+                </div>
+              `).join("")}
+            </div>
+            ${call.notes ? `<div class="call-notes">&#128203; ${call.notes}</div>` : ""}
+          `;
+          return card;
+        }
+
+        if (open.length) {
+          const lbl = document.createElement("div");
+          lbl.className = "section-label";
+          lbl.textContent = "🔴 Open Calls (" + open.length + ")";
+          c.appendChild(lbl);
+          open.forEach(call => c.appendChild(renderCall(call)));
+        }
+
+        if (closed.length) {
+          const lbl = document.createElement("div");
+          lbl.className = "section-label";
+          lbl.textContent = "✅ Closed Calls (" + closed.length + ")";
+          c.appendChild(lbl);
+          closed.forEach(call => c.appendChild(renderCall(call)));
+        }
+      });
+      unsubs.push(u);
+    }
+    window.reloadMyCalls = loadMyCalls;
+
+    // ── TELZIO SMS REMINDERS ─────────────────────────────────────
+    const TELZIO_API_KEY    = "pk_58125cd82e5116d32c3a319626bd";
+    const TELZIO_API_SECRET = "sk_8bd5769893fe85c1fb4ecce8f0";
+    const FROM_NUMBER       = "7328443577"; // dispatch number
+
+    async function sendSMS(toPhone, message) {
+      const to = toPhone.replace(/\D/g,""); // strip non-digits
+      if (to.length < 10) { console.warn("Invalid phone:", toPhone); return false; }
+      try {
+        const resp = await fetch("https://api.telzio.com/sms", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": "Basic " + btoa(TELZIO_API_KEY + ":" + TELZIO_API_SECRET)
+          },
+          body: JSON.stringify({
+            from: FROM_NUMBER,
+            to:   to.length === 10 ? "1" + to : to,
+            body: message
+          })
+        });
+        return resp.ok;
+      } catch(e) {
+        console.error("Telzio SMS error:", e);
+        return false;
+      }
+    }
+
+    async function checkAndSendReminders() {
+      // Only run for admins
+      if (currentRole !== "admin") return;
+      const now = Date.now();
+      const snap = await getDocs(collection(db,"calls"));
+      for (const d of snap.docs) {
+        const call = d.data();
+        if (call.status !== "open") continue;
+        if (!call.callerPhone)      continue;
+        if (call.reminderSent)      continue;
+
+        const openedAt = call.openedAt?.toDate();
+        if (!openedAt) continue;
+        const daysOut = (now - openedAt.getTime()) / (1000 * 60 * 60 * 24);
+
+        // Check each item's reminderDays setting
+        for (const item of (call.items||[])) {
+          const eq = equipmentMap[item.firestoreId];
+          if (!eq) continue;
+          const reminderDays = eq.reminderDays || 7;
+          if (reminderDays === 0) continue; // 0 = reminders off
+          if (daysOut < reminderDays) continue;
+
+          // Send reminder
+          const msg =
+            "COMC Reminder: " + item.name + " (" + (item.eqId||"") + ") " +
+            "checked out on Call #" + call.callNumber + " is overdue for return. " +
+            "Please return it to storage or contact dispatch at (732) 844-3577. Thank you!";
+
+          const sent = await sendSMS(call.callerPhone, msg);
+          if (sent) {
+            // Mark reminder sent on call
+            await updateDoc(doc(db,"calls",d.id), { reminderSent: true, reminderSentAt: serverTimestamp() });
+            await addLog({
+              action: "REMINDER_SENT",
+              callNumber: call.callNumber,
+              equipmentName: item.name + " (" + (item.eqId||"") + ")",
+              memberName: call.memberName,
+              userId: currentUser.uid,
+              userName: currentUser.displayName||currentUser.email
+            });
+            console.log("Reminder sent for Call #" + call.callNumber);
+            break; // one reminder per call
+          }
+        }
+      }
+    }
+
+    // Run reminder check on login and every hour
+    window.addEventListener("load", () => {
+      setTimeout(checkAndSendReminders, 3000); // 3s after load
+      setInterval(checkAndSendReminders, 60 * 60 * 1000); // every hour
+    });
+
+    window.sendTestReminder = async function(callId) {
+      const call = activeCallsMap[callId];
+      if (!call) return;
+      if (!call.callerPhone) { alert("No phone number on this call."); return; }
+      const items = (call.items||[]).map(i=>i.eqId||i.name).join(", ");
+      const msg = "COMC Reminder: Equipment " + items + " from Call #" + call.callNumber + " is due for return. Please contact dispatch at (732) 844-3577.";
+      const sent = await sendSMS(call.callerPhone, msg);
+      if (sent) {
+        await updateDoc(doc(db,"calls",callId), { reminderSent:true, reminderSentAt:serverTimestamp() });
+        await addLog({ action:"REMINDER_SENT", callNumber:call.callNumber, items, userId:currentUser.uid, userName:currentUser.displayName||currentUser.email });
+        showToast("Reminder sent to " + call.callerPhone);
+      } else {
+        showToast("Failed to send reminder. Check Telzio API.");
+      }
+    };
 
     // ── REPORTS ──────────────────────────────────────────────────
     window.generateReport = async function(type, format) {
@@ -2001,10 +2202,11 @@
   <div class="tabs">
     <div class="tab active" data-tab="checkout"  onclick="switchTab('checkout',this)">&#128229; Check Out</div>
     <div class="tab"        data-tab="checkin"   onclick="switchTab('checkin',this)">&#128228; Check In</div>
-    <div class="tab"        data-tab="inventory" onclick="switchTab('inventory',this)">&#128230; Inventory</div>
+    <div class="tab admin-only" data-tab="inventory" onclick="switchTab('inventory',this)">&#128230; Inventory</div>
     <div class="tab admin-only" data-tab="users"    onclick="switchTab('users',this)">&#128101; Users</div>
-    <div class="tab"            data-tab="log"      onclick="switchTab('log',this)">&#128203; Log</div>
+    <div class="tab admin-only" data-tab="log"      onclick="switchTab('log',this)">&#128203; Log</div>
     <div class="tab admin-only" data-tab="reports"  onclick="switchTab('reports',this)">&#128196; Reports</div>
+    <div class="tab member-only" data-tab="mycalls"  onclick="switchTab('mycalls',this)">&#128203; Call Log</div>
   </div>
 
   <!-- CHECK OUT -->
@@ -2015,7 +2217,8 @@
         <div class="form-group"><label>Call Number *</label><input type="text" id="co-callnum" placeholder="e.g. 247"></div>
         <div class="form-group"><label>Member</label><input type="text" id="co-member" placeholder="Your name"></div>
       </div>
-      <div class="form-group"><label>Location</label><input type="text" id="co-location" placeholder="Address or cross-streets"></div>
+      <div class="form-group"><label>Location</label><input type="text" id="co-location" placeholder="Address or cross-streets" autocomplete="off"></div>
+      <div class="form-group"><label>Caller Phone (for return reminders)</label><input type="tel" id="co-phone" placeholder="e.g. 732-555-5555"></div>
       <div class="form-group"><label>Notes</label><input type="text" id="co-notes" placeholder="Optional"></div>
     </div>
     <div class="co-form">
@@ -2048,6 +2251,11 @@
       <div class="scan-divider"><span>or select from open calls below</span></div>
     </div>
     <div id="checkin-calls-list"></div>
+  </div>
+
+  <!-- MY CALLS (members only) -->
+  <div id="tab-mycalls" class="tab-content">
+    <div id="mycalls-list"><div class="loading">Loading...</div></div>
   </div>
 
   <!-- INVENTORY -->
@@ -2161,8 +2369,9 @@
     document.querySelectorAll(".tab-content").forEach(t=>t.classList.remove("active"));
     if(el) el.classList.add("active");
     document.getElementById("tab-"+name).classList.add("active");
-    if (name === "users" && window.loadUsers) window.loadUsers();
-    if (name === "log"   && window.reloadLog) window.reloadLog();
+    if (name === "users"   && window.loadUsers)      window.loadUsers();
+    if (name === "log"     && window.reloadLog)       window.reloadLog();
+    if (name === "mycalls" && window.reloadMyCalls)   window.reloadMyCalls();
   }
 </script>
 </body>
