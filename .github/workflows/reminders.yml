@@ -109,12 +109,14 @@ jobs:
               equipMap[id] = {
                 name:         d.fields?.name?.stringValue || "",
                 eqId:         d.fields?.eqId?.stringValue || "",
-                reminderDays: parseInt(d.fields?.reminderDays?.integerValue ?? "7")
+                reminderDays: parseInt(d.fields?.reminderDays?.integerValue ?? d.fields?.reminderDays?.doubleValue ?? "7")
               };
             });
+            console.log("Equipment loaded:", Object.keys(equipMap).length, "items");
 
             // Get open calls
             const callDocs = await firestoreGet("calls");
+            console.log("Total calls found:", callDocs.length);
             let sent = 0;
 
             for (const callDoc of callDocs) {
@@ -126,13 +128,17 @@ jobs:
               const callNum  = fields.callNumber?.stringValue || "?";
               const member   = fields.memberName?.stringValue || "";
 
-              if (status !== "open")   continue;
-              if (!phone)              continue;
-              if (alreadySent)         continue;
-              if (!openedAt)           continue;
+              console.log(`Call #${callNum}: status=${status}, phone=${phone||"NONE"}, reminderSent=${alreadySent}, openedAt=${openedAt}`);
+
+              if (status !== "open")   { console.log("  → skip: not open"); continue; }
+              if (!phone)              { console.log("  → skip: no phone"); continue; }
+              if (alreadySent)         { console.log("  → skip: reminder already sent"); continue; }
+              if (!openedAt)           { console.log("  → skip: no openedAt"); continue; }
 
               const daysOut = (now - new Date(openedAt).getTime()) / (1000 * 60 * 60 * 24);
+              console.log(`  → ${daysOut.toFixed(1)} days out`);
               const items   = fields.items?.arrayValue?.values || [];
+              console.log(`  → ${items.length} items in call`);
 
               for (const itemVal of items) {
                 const itemFields = itemVal.mapValue?.fields || {};
@@ -141,9 +147,10 @@ jobs:
                 const eqId        = itemFields.eqId?.stringValue || "";
                 const eq          = equipMap[firestoreId] || {};
                 const reminderDays = eq.reminderDays ?? 7;
+                console.log(`    → item ${eqId}: reminderDays=${reminderDays}, daysOut=${daysOut.toFixed(1)}`);
 
-                if (reminderDays === 0)        continue;
-                if (daysOut < reminderDays)    continue;
+                if (reminderDays === 0)        { console.log("    → skip: reminders off"); continue; }
+                if (daysOut < reminderDays)    { console.log("    → skip: not overdue yet"); continue; }
 
                 const borrowedDate = new Date(openedAt).toLocaleDateString("en-US",{month:"long",day:"numeric",year:"numeric"});
                 const msg =
