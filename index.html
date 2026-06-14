@@ -6,28 +6,21 @@
   <title>COMC Equipment Manager</title>
   <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800&family=Barlow:wght@400;500;600&display=swap" rel="stylesheet">
   <!-- Google Places Autocomplete -->
-  <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyAFAsM0xqmKrnirTKIH9If2s4GuDpmO6BQ&libraries=places" async defer
-    onload="initAutocomplete()"></script>
   <script>
-    function initAutocomplete() {
-      var input = document.getElementById("co-location");
-      if (!input || !window.google) return;
-      var ac = new google.maps.places.Autocomplete(input, {
+    window.initAutocomplete = function() {
+      const input = document.getElementById("co-location");
+      if (!input || !window.google?.maps?.places) return;
+      const ac = new google.maps.places.Autocomplete(input, {
         types: ["geocode"],
         componentRestrictions: { country: "us" }
       });
       ac.addListener("place_changed", function() {
-        var place = ac.getPlace();
-        if (place && place.formatted_address) {
-          input.value = place.formatted_address;
-        }
+        const place = ac.getPlace();
+        if (place && place.formatted_address) input.value = place.formatted_address;
       });
-    }
-    // Retry if element not ready yet
-    document.addEventListener("DOMContentLoaded", function() {
-      if (window.google && window.google.maps) initAutocomplete();
-    });
+    };
   </script>
+  <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyAFAsM0xqmKrnirTKIH9If2s4GuDpmO6BQ&libraries=places&loading=async&callback=initAutocomplete"></script>
   <script>
     function loadScript(urls, idx) {
       if (idx >= urls.length) { console.error("All jsQR CDNs failed"); return; }
@@ -156,6 +149,7 @@
       if (currentRole==="admin") {
         loadLog();
         window.loadUsers();
+        setTimeout(startReminderSchedule, 3000); // start after equipment loads
       } else {
         loadMyCalls();
       }
@@ -470,7 +464,10 @@
 
       checkoutItems = [];
       renderCheckoutItems();
-      ["co-callnum","co-location","co-notes"].forEach(id => document.getElementById(id).value="");
+      ["co-callnum","co-location","co-phone","co-notes"].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.value = "";
+      });
       switchTab("checkin", document.querySelector('.tab[data-tab="checkin"]'));
       showToast("Call #"+callNum+" opened!");
     };
@@ -486,6 +483,7 @@
       calls.forEach(([callId, call]) => {
         const ts      = call.openedAt?.toDate();
         const time    = ts ? ts.toLocaleString() : "—";
+        const daysOut = ts ? Math.floor((Date.now() - ts.getTime()) / (1000*60*60*24)) : 0;
         const isLegacy = (call.items||[]).some(i => !i.firestoreId);
         const card    = document.createElement("div");
         card.className = "call-card";
@@ -495,15 +493,28 @@
         header.innerHTML = `
           <div class="call-header">
             <div class="call-num">Call #${call.callNumber}</div>
-            <div class="call-status-badge" style="background:rgba(124,200,232,.2);color:var(--sky)">OPEN</div>
+            <div style="display:flex;gap:6px;align-items:center;">
+              <div class="call-status-badge" style="background:rgba(124,200,232,.2);color:var(--sky)">OPEN</div>
+              <button class="admin-only" style="display:${currentRole==='admin'?'':'none'};padding:3px 8px;background:rgba(255,189,0,.15);color:var(--yellow);border:1px solid rgba(255,189,0,.3);border-radius:6px;font-family:'Barlow Condensed',sans-serif;font-size:.72rem;font-weight:700;text-transform:uppercase;cursor:pointer;" id="edit-call-btn-${callId}">&#9998; Edit</button>
+            </div>
           </div>
           <div class="call-meta-row">
             ${call.location   ? `<span>&#128205; ${call.location}</span>` : ""}
             ${call.memberName ? `<span>&#128100; ${call.memberName}${call.memberUnit?" (MC-"+call.memberUnit+")":""}</span>` : ""}
+            ${call.callerPhone ? `<span>&#128222; ${call.callerPhone}</span>` : ""}
+            ${call.reminderSent ? `<span style="color:var(--green)">&#10003; Reminder sent</span>` : ""}
+          </div>
+          <div class="call-date-row">
+            <span>&#128197; Opened: ${time}</span>
+            <span class="days-out-badge ${daysOut >= 7 ? "days-overdue" : ""}">&#128336; ${daysOut === 0 ? "Today" : daysOut + " day" + (daysOut !== 1 ? "s" : "") + " out"}</span>
           </div>
           <div class="call-items-label" style="font-size:.68rem;font-weight:600;color:var(--muted);letter-spacing:.1em;text-transform:uppercase;margin-bottom:6px;">Tap item to return:</div>
         `;
         card.appendChild(header);
+
+        // Wire up edit button after appending to DOM
+        const editBtn = header.querySelector("#edit-call-btn-"+callId);
+        if (editBtn) editBtn.addEventListener("click", function() { editCall(callId); });
 
         // Item rows — tap individual item to return it
         (call.items||[]).forEach(item => {
@@ -571,6 +582,28 @@
           card.appendChild(closeBtn);
         }
 
+        // Send Reminder button — show for admin calls that are overdue and have a phone
+        if (currentRole === "admin") {
+          const minReminderDays = (call.items||[]).reduce((min, item) => {
+            const eq = equipmentMap[item.firestoreId];
+            const rd = eq?.reminderDays ?? 7;
+            return rd > 0 ? Math.min(min, rd) : min;
+          }, 999);
+          const isOverdue = daysOut >= minReminderDays && minReminderDays < 999;
+
+          if (call.callerPhone) {
+            const reminderBtn = document.createElement("button");
+            reminderBtn.style.cssText = `width:100%;margin-top:6px;padding:10px;border-radius:7px;font-family:'Barlow Condensed',sans-serif;font-size:.82rem;font-weight:700;text-transform:uppercase;cursor:pointer;border:1px solid ${isOverdue && !call.reminderSent ? "rgba(240,80,80,.5)" : "rgba(255,189,0,.3)"};background:${isOverdue && !call.reminderSent ? "rgba(240,80,80,.2)" : "rgba(255,189,0,.15)"};color:${isOverdue && !call.reminderSent ? "var(--red)" : "var(--yellow)"};`;
+            reminderBtn.innerHTML = call.reminderSent
+              ? "&#10003; Reminder Sent — Send Again"
+              : isOverdue
+                ? "&#9888; OVERDUE — Send Return Reminder"
+                : "&#128222; Send Return Reminder";
+            reminderBtn.addEventListener("click", function() { window.sendTestReminder(callId); });
+            card.appendChild(reminderBtn);
+          }
+        }
+
         c.appendChild(card);
       });
     }
@@ -604,6 +637,46 @@
         console.error("Error returning item:", e);
         alert("Error: " + e.message);
       }
+    };
+
+    window.editCall = async function(callId) {
+      const call = activeCallsMap[callId];
+      if (!call) return;
+      const modal = document.getElementById("modal");
+      document.getElementById("modal-title").textContent = "Edit Call #" + call.callNumber;
+      document.getElementById("modal-body").innerHTML = `
+        <div class="form-group"><label>Call Number</label>
+          <input id="ec-callnum" type="text" value="${call.callNumber||''}"></div>
+        <div class="form-group"><label>Member Name</label>
+          <input id="ec-member" type="text" value="${call.memberName||''}"></div>
+        <div class="form-group"><label>Location</label>
+          <input id="ec-location" type="text" value="${call.location||''}" autocomplete="off"></div>
+        <div class="form-group"><label>Caller Phone</label>
+          <input id="ec-phone" type="tel" value="${call.callerPhone||''}"></div>
+        <div class="form-group"><label>Notes</label>
+          <input id="ec-notes" type="text" value="${call.notes||''}"></div>
+      `;
+      document.getElementById("modal-confirm").textContent = "Save";
+      document.getElementById("modal-confirm").style.display = "";
+      document.getElementById("modal-confirm").onclick = async function() {
+        const callNumber  = document.getElementById("ec-callnum").value.trim();
+        const memberName  = document.getElementById("ec-member").value.trim();
+        const location    = document.getElementById("ec-location").value.trim();
+        const callerPhone = document.getElementById("ec-phone").value.trim();
+        const notes       = document.getElementById("ec-notes").value.trim();
+        if (!callNumber) { alert("Call number required."); return; }
+        await updateDoc(doc(db,"calls",callId), { callNumber, memberName, location, callerPhone, notes });
+        await addLog({
+          action: "CALL_EDITED", callNumber,
+          userId: currentUser.uid, userName: currentUser.displayName||currentUser.email
+        });
+        closeModal();
+        showToast("Call #"+callNumber+" updated.");
+      };
+      modal.style.display = "flex";
+
+      // Init autocomplete on location field
+      setTimeout(() => { if (window.initAutocomplete) window.initAutocomplete(); }, 100);
     };
 
     window.showAddToCall = function(callId) {
@@ -1540,8 +1613,9 @@
     const FROM_NUMBER       = "7328443577"; // dispatch number
 
     async function sendSMS(toPhone, message) {
-      const to = toPhone.replace(/\D/g,""); // strip non-digits
+      const to = toPhone.replace(/\D/g,"");
       if (to.length < 10) { console.warn("Invalid phone:", toPhone); return false; }
+      const toFormatted = to.length === 10 ? "1" + to : to;
       try {
         const resp = await fetch("https://api.telzio.com/sms", {
           method: "POST",
@@ -1551,10 +1625,12 @@
           },
           body: JSON.stringify({
             from: FROM_NUMBER,
-            to:   to.length === 10 ? "1" + to : to,
+            to:   toFormatted,
             body: message
           })
         });
+        const result = await resp.json().catch(()=>({}));
+        console.log("Telzio response:", resp.status, result);
         return resp.ok;
       } catch(e) {
         console.error("Telzio SMS error:", e);
@@ -1563,37 +1639,35 @@
     }
 
     async function checkAndSendReminders() {
-      // Only run for admins
       if (currentRole !== "admin") return;
-      const now = Date.now();
+      console.log("Checking reminders…");
+      const now  = Date.now();
       const snap = await getDocs(collection(db,"calls"));
       for (const d of snap.docs) {
         const call = d.data();
-        if (call.status !== "open") continue;
-        if (!call.callerPhone)      continue;
-        if (call.reminderSent)      continue;
-
+        if (call.status !== "open")  continue;
+        if (!call.callerPhone)       continue;
+        if (call.reminderSent)       continue;
         const openedAt = call.openedAt?.toDate();
         if (!openedAt) continue;
         const daysOut = (now - openedAt.getTime()) / (1000 * 60 * 60 * 24);
 
-        // Check each item's reminderDays setting
         for (const item of (call.items||[])) {
           const eq = equipmentMap[item.firestoreId];
           if (!eq) continue;
-          const reminderDays = eq.reminderDays || 7;
-          if (reminderDays === 0) continue; // 0 = reminders off
+          const reminderDays = eq.reminderDays ?? 7;
+          if (reminderDays === 0) continue;
           if (daysOut < reminderDays) continue;
 
-          // Send reminder
+          const borrowedDate = openedAt ? openedAt.toLocaleDateString("en-US",{month:"long",day:"numeric",year:"numeric"}) : "recently";
           const msg =
-            "COMC Reminder: " + item.name + " (" + (item.eqId||"") + ") " +
-            "checked out on Call #" + call.callNumber + " is overdue for return. " +
-            "Please return it to storage or contact dispatch at (732) 844-3577. Thank you!";
+            "Hi! This is a reminder from Chaverim of Middlesex County that the " +
+            item.name + " (" + (item.eqId||"") + ") you borrowed on " + borrowedDate +
+            " may be ready to return. If you're done using it, please call us at (732) 844-3577 to arrange pickup. Thank you!";
 
+          console.log("Sending reminder for Call #" + call.callNumber + " to " + call.callerPhone);
           const sent = await sendSMS(call.callerPhone, msg);
           if (sent) {
-            // Mark reminder sent on call
             await updateDoc(doc(db,"calls",d.id), { reminderSent: true, reminderSentAt: serverTimestamp() });
             await addLog({
               action: "REMINDER_SENT",
@@ -1603,25 +1677,28 @@
               userId: currentUser.uid,
               userName: currentUser.displayName||currentUser.email
             });
-            console.log("Reminder sent for Call #" + call.callNumber);
-            break; // one reminder per call
+            showToast("Reminder sent for Call #" + call.callNumber);
+            break;
           }
         }
       }
     }
 
-    // Run reminder check on login and every hour
-    window.addEventListener("load", () => {
-      setTimeout(checkAndSendReminders, 3000); // 3s after load
-      setInterval(checkAndSendReminders, 60 * 60 * 1000); // every hour
-    });
+    // Run reminders after login and every hour
+    let reminderInterval = null;
+    function startReminderSchedule() {
+      checkAndSendReminders(); // run immediately on login
+      if (reminderInterval) clearInterval(reminderInterval);
+      reminderInterval = setInterval(checkAndSendReminders, 60 * 60 * 1000);
+    }
 
     window.sendTestReminder = async function(callId) {
       const call = activeCallsMap[callId];
       if (!call) return;
       if (!call.callerPhone) { alert("No phone number on this call."); return; }
+      const borrowedDate = call.openedAt?.toDate()?.toLocaleDateString("en-US",{month:"long",day:"numeric",year:"numeric"}) || "recently";
       const items = (call.items||[]).map(i=>i.eqId||i.name).join(", ");
-      const msg = "COMC Reminder: Equipment " + items + " from Call #" + call.callNumber + " is due for return. Please contact dispatch at (732) 844-3577.";
+      const msg = "Hi! This is a reminder from Chaverim of Middlesex County that the equipment (" + items + ") you borrowed on " + borrowedDate + " may be ready to return. If you're done using it, please call us at (732) 844-3577 to arrange pickup. Thank you!";
       const sent = await sendSMS(call.callerPhone, msg);
       if (sent) {
         await updateDoc(doc(db,"calls",callId), { reminderSent:true, reminderSentAt:serverTimestamp() });
@@ -2041,7 +2118,9 @@
     .call-item{display:flex;justify-content:space-between;align-items:center;padding:6px 10px;background:var(--surface2);border-radius:6px;margin-bottom:4px;}
     .call-item-name{font-size:.88rem;}
     .call-item-eqid{font-family:'Barlow Condensed',sans-serif;font-size:.75rem;color:var(--sky);margin-left:6px;font-weight:700;}
-    .call-notes{font-size:.8rem;color:var(--muted);margin-bottom:8px;}
+    .call-date-row { display:flex; justify-content:space-between; align-items:center; font-size:.75rem; color:var(--muted); margin-bottom:10px; }
+    .days-out-badge { font-family:'Barlow Condensed',sans-serif; font-size:.72rem; font-weight:700; padding:2px 8px; border-radius:20px; background:rgba(124,200,232,.15); color:var(--sky); }
+    .days-overdue   { background:rgba(240,80,80,.2); color:var(--red); }
     .call-footer-meta{font-size:.72rem;color:var(--muted);margin-bottom:10px;}
     .call-actions{display:flex;gap:8px;}
     .close-call-btn{flex:2;padding:10px;background:rgba(72,199,142,.2);color:var(--green);border:1px solid rgba(72,199,142,.3);border-radius:7px;font-family:'Barlow Condensed',sans-serif;font-size:.88rem;font-weight:700;text-transform:uppercase;cursor:pointer;}
