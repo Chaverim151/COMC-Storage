@@ -18,8 +18,8 @@ jobs:
 
           const FIREBASE_PROJECT = "comc-storage";
           const FIREBASE_API_KEY = "AIzaSyAYZVEJfe8RFgit-0nwIndTCaGE8drUKz4";
-          const TELZIO_API_KEY   = "pk_58125cd82e5116d32c3a319626bd";
-          const TELZIO_SECRET    = "sk_8bd5769893fe85c1fb4ecce8f0";
+          const TELZIO_API_KEY   = "pk_9d9b7fb100959f3de1d71b3d3138";
+          const TELZIO_SECRET    = "sk_9deb92791a54a8c47010cf8315";
           const FROM_NUMBER      = "7328443577";
 
           // Simple fetch wrapper for Node
