@@ -145,7 +145,6 @@
       const memberField = document.getElementById("co-member");
       if (memberField) memberField.value = currentUser.displayName || "";
       loadEquipment();
-      loadCalls();
       if (currentRole==="admin") {
         loadLog();
         window.loadUsers();
@@ -1607,33 +1606,23 @@
     }
     window.reloadMyCalls = loadMyCalls;
 
-    // ── TELZIO SMS REMINDERS ─────────────────────────────────────
-    const TELZIO_API_KEY    = "pk_9d9b7fb100959f3de1d71b3d3138";
-    const TELZIO_API_SECRET = "sk_9deb92791a54a8c47010cf8315";
-    const FROM_NUMBER       = "7328443577"; // dispatch number
+    // ── SMS via CLOUDFLARE WORKER PROXY ──────────────────────────
+    const WORKER_URL = "https://comc-sms.shmueleidelman-work.workers.dev";
 
     async function sendSMS(toPhone, message) {
       const to = toPhone.replace(/\D/g,"");
       if (to.length < 10) { console.warn("Invalid phone:", toPhone); return false; }
-      const toFormatted = to.length === 10 ? "1" + to : to;
       try {
-        const resp = await fetch("https://api.telzio.com/sms", {
+        const resp = await fetch(WORKER_URL, {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": "Basic " + btoa(TELZIO_API_KEY + ":" + TELZIO_API_SECRET)
-          },
-          body: JSON.stringify({
-            from: FROM_NUMBER,
-            to:   toFormatted,
-            body: message
-          })
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ to: toPhone, message })
         });
         const result = await resp.json().catch(()=>({}));
-        console.log("Telzio response:", resp.status, result);
-        return resp.ok;
+        console.log("SMS proxy response:", resp.status, result);
+        return result.ok === true;
       } catch(e) {
-        console.error("Telzio SMS error:", e);
+        console.error("SMS proxy error:", e);
         return false;
       }
     }
@@ -1699,13 +1688,15 @@
       const borrowedDate = call.openedAt?.toDate()?.toLocaleDateString("en-US",{month:"long",day:"numeric",year:"numeric"}) || "recently";
       const items = (call.items||[]).map(i=>i.eqId||i.name).join(", ");
       const msg = "Hi! This is a reminder from Chaverim of Middlesex County that the equipment (" + items + ") you borrowed on " + borrowedDate + " may be ready to return. If you're done using it, please call us at (732) 844-3577 to arrange pickup. Thank you!";
+      showToast("Sending reminder…");
       const sent = await sendSMS(call.callerPhone, msg);
       if (sent) {
         await updateDoc(doc(db,"calls",callId), { reminderSent:true, reminderSentAt:serverTimestamp() });
-        await addLog({ action:"REMINDER_SENT", callNumber:call.callNumber, items, userId:currentUser.uid, userName:currentUser.displayName||currentUser.email });
+        await addLog({ action:"REMINDER_SENT", callNumber:call.callNumber, items,
+          userId:currentUser.uid, userName:currentUser.displayName||currentUser.email });
         showToast("Reminder sent to " + call.callerPhone);
       } else {
-        showToast("Failed to send reminder. Check Telzio API.");
+        showToast("Failed to send — check Cloudflare Worker is deployed.");
       }
     };
 
