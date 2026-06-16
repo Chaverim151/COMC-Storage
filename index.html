@@ -501,7 +501,7 @@
             ${call.location   ? `<span>&#128205; ${call.location}</span>` : ""}
             ${call.memberName ? `<span>&#128100; ${call.memberName}${call.memberUnit?" (MC-"+call.memberUnit+")":""}</span>` : ""}
             ${call.callerPhone ? `<span>&#128222; ${call.callerPhone}</span>` : ""}
-            ${call.reminderSent ? `<span style="color:var(--green)">&#10003; Reminder sent</span>` : ""}
+            ${call.reminderSent ? `<span style="color:var(--green)">&#10003; Reminder sent${call.reminderSentAt?.toDate ? " " + call.reminderSentAt.toDate().toLocaleString("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}) : ""}</span>` : ""}
           </div>
           <div class="call-date-row">
             <span>&#128197; Opened: ${time}</span>
@@ -594,7 +594,7 @@
             const reminderBtn = document.createElement("button");
             reminderBtn.style.cssText = `width:100%;margin-top:6px;padding:10px;border-radius:7px;font-family:'Barlow Condensed',sans-serif;font-size:.82rem;font-weight:700;text-transform:uppercase;cursor:pointer;border:1px solid ${isOverdue && !call.reminderSent ? "rgba(240,80,80,.5)" : "rgba(255,189,0,.3)"};background:${isOverdue && !call.reminderSent ? "rgba(240,80,80,.2)" : "rgba(255,189,0,.15)"};color:${isOverdue && !call.reminderSent ? "var(--red)" : "var(--yellow)"};`;
             reminderBtn.innerHTML = call.reminderSent
-              ? "&#10003; Reminder Sent — Send Again"
+              ? "&#10003; Sent" + (call.reminderSentAt?.toDate ? " " + call.reminderSentAt.toDate().toLocaleString("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}) : "") + " — Send Again"
               : isOverdue
                 ? "&#9888; OVERDUE — Send Return Reminder"
                 : "&#128222; Send Return Reminder";
@@ -1610,8 +1610,6 @@
     const WORKER_URL = "https://comc-sms.shmueleidelman-work.workers.dev";
 
     async function sendSMS(toPhone, message) {
-      const to = toPhone.replace(/\D/g,"");
-      if (to.length < 10) { console.warn("Invalid phone:", toPhone); return false; }
       try {
         const resp = await fetch(WORKER_URL, {
           method: "POST",
@@ -1619,10 +1617,10 @@
           body: JSON.stringify({ to: toPhone, message })
         });
         const result = await resp.json().catch(()=>({}));
-        console.log("SMS proxy response:", resp.status, result);
+        console.log("SMS worker result:", JSON.stringify(result));
         return result.ok === true;
       } catch(e) {
-        console.error("SMS proxy error:", e);
+        console.error("SMS request failed:", e);
         return false;
       }
     }
