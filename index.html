@@ -145,12 +145,11 @@
       const memberField = document.getElementById("co-member");
       if (memberField) memberField.value = currentUser.displayName || "";
       loadEquipment();
+      loadMyCalls();
       if (currentRole==="admin") {
         loadLog();
         window.loadUsers();
         setTimeout(startReminderSchedule, 3000); // start after equipment loads
-      } else {
-        loadMyCalls();
       }
     }
 
@@ -168,6 +167,7 @@
       if (l.includes("fan"))       return "Fan";
       if (l.includes("ez spare"))  return "EZ-Spare";
       if (l.includes("spare"))     return "Spare";
+      if (l.includes("kit"))       return "Kit";
       return "EQ";
     }
 
@@ -297,14 +297,28 @@
               ${d.modelNumber  ? `<span>&#128203; ${d.modelNumber}</span>` : ""}
             </div>` : ""}
             ${d.replacementValue ? `<div class="eq-meta-row"><span>&#128176; Replacement: $${parseFloat(d.replacementValue).toFixed(2)}</span>${d.placeOfPurchase?`<span>&#128722; ${d.placeOfPurchase}</span>`:""}</div>` : ""}
+            ${d.kitComponents && d.kitComponents.length ? `
+            <div class="kit-contents">
+              <strong>&#128230; Kit Components:</strong>
+              ${d.kitComponents.map(c => `
+                <div class="kit-comp-row">
+                  <span class="kit-comp-name">${c.name}</span>
+                  <span class="kit-comp-status kit-status-${c.status}">${c.status==="available"?"OK":c.status==="broken"?"BROKEN":"MISSING"}</span>
+                  ${c.value ? `<span class="kit-comp-value">$${parseFloat(c.value).toFixed(2)}</span>` : ""}
+                  ${c.reorderLink && currentRole==="admin" ? `<a href="${c.reorderLink}" target="_blank" class="kit-comp-reorder">&#128722;</a>` : ""}
+                </div>
+              `).join("")}
+              <div class="kit-comp-total">Total: $${d.kitComponents.reduce((s,c)=>s+(parseFloat(c.value)||0),0).toFixed(2)}</div>
+            </div>` : ""}
             ${d.status==="broken" && d.brokenNote ? `<div class="broken-note">&#128683; ${d.brokenNote}</div>` : ""}
             <div class="eq-actions" style="margin-top:8px;">
-              ${d.reorderLink ? `<a href="${d.reorderLink}" target="_blank" class="eq-btn btn-reorder">&#128722; Reorder</a>` : ""}
+              ${d.reorderLink && currentRole==="admin" ? `<a href="${d.reorderLink}" target="_blank" class="eq-btn btn-reorder">&#128722; Reorder</a>` : ""}
               <button class="eq-btn btn-broken" onclick="markBroken('${id}','${d.name}')" ${d.status==="broken"?"disabled":""}>&#128683; Broken</button>
               <button class="eq-btn btn-missing" onclick="markMissing('${id}','${d.name}')" ${d.status==="missing"?"disabled":""}>&#10067; Missing</button>
               <span class="admin-only" style="display:${currentRole==="admin"?"contents":"none"}">
                 ${d.eqId ? `<button class="eq-btn btn-qr" onclick="showQRById('${id}')">&#9638; QR</button>` : ""}
                 <button class="eq-btn btn-edit" onclick="editEquipment('${id}')">&#9998; Edit</button>
+                <button class="eq-btn btn-duplicate" onclick="duplicateEquipment('${id}')">&#10697; Duplicate</button>
               </span>
             </div>
           `;
@@ -391,7 +405,7 @@
       if (!d) { alert("Item not found."); return; }
       if (d.status !== "available") { alert(d.eqId + " is no longer available."); return; }
       if (checkoutItems.find(i => i.firestoreId === firestoreId)) { showToast(d.eqId + " already added."); return; }
-      checkoutItems.push({ firestoreId, name: d.name, eqId: d.eqId || "" });
+      checkoutItems.push({ firestoreId, name: d.name, eqId: d.eqId || "", kitComponents: d.kitComponents || [] });
       renderCheckoutItems();
       showToast("Added: " + (d.eqId||d.name));
       // Reset selectors
@@ -410,7 +424,10 @@
         const row = document.createElement("div");
         row.className = "staged-item";
         row.innerHTML = `
-          <div class="staged-name">${item.name} <span class="staged-eqid">${item.eqId}</span></div>
+          <div style="flex:1;">
+            <div class="staged-name">${item.name} <span class="staged-eqid">${item.eqId}</span></div>
+            ${item.kitComponents && item.kitComponents.length ? `<div style="font-size:.72rem;color:var(--muted);margin-top:2px;">&#128230; Includes: ${item.kitComponents.map(c=>c.name).join(", ")}</div>` : ""}
+          </div>
           <button class="staged-remove" onclick="removeCheckoutItem(${i})">&#10005;</button>
         `;
         c.appendChild(row);
@@ -501,7 +518,7 @@
             ${call.location   ? `<span>&#128205; ${call.location}</span>` : ""}
             ${call.memberName ? `<span>&#128100; ${call.memberName}${call.memberUnit?" (MC-"+call.memberUnit+")":""}</span>` : ""}
             ${call.callerPhone ? `<span>&#128222; ${call.callerPhone}</span>` : ""}
-            ${call.reminderSent ? `<span style="color:var(--green)">&#10003; Reminder sent${call.reminderSentAt?.toDate ? " " + call.reminderSentAt.toDate().toLocaleString("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}) : ""}</span>` : ""}
+            ${call.reminderSent && currentRole==="admin" ? `<span style="color:var(--green)">&#10003; Reminder sent${call.reminderSentAt?.toDate ? " " + call.reminderSentAt.toDate().toLocaleString("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}) : ""}</span>` : ""}
           </div>
           <div class="call-date-row">
             <span>&#128197; Opened: ${time}</span>
@@ -1263,15 +1280,80 @@
           <input id="m-reorder" type="url" placeholder="https://..."></div>
         <div class="form-group"><label>Return Reminder (days)</label>
           <input id="m-reminder" type="number" placeholder="e.g. 7 (0 = no reminder)" min="0" value="7"></div>
+        <div class="form-group"><label>Kit Components (optional)</label>
+          <div id="kit-components-list"></div>
+          <button type="button" class="tbtn tbtn-muted" style="width:100%;margin-top:6px;" onclick="addKitComponentRow()">+ Add Component</button>
+          <div style="font-size:.72rem;color:var(--muted);margin-top:4px;">Add individual parts (hose, pump, cord) with their own status and value. Leave empty if this isn't a kit.</div>
+        </div>
         <div style="font-size:.78rem;color:var(--muted);margin-bottom:4px;">
           Adding 1 unit. For multiple units use <strong>Bulk Add</strong>.
         </div>
       `;
+      window._kitComponents = [];
       document.getElementById("modal-confirm").textContent = "Add Unit";
       document.getElementById("modal-confirm").style.display = "";
       document.getElementById("modal-confirm").onclick = confirmAddUnit;
       modal.style.display = "flex";
     };
+
+    window.addKitComponentRow = function() {
+      window._kitComponents.push({ name: "", status: "available", value: 0, reorderLink: "" });
+      renderKitComponentRows();
+    };
+
+    window.removeKitComponentRow = function(i) {
+      window._kitComponents.splice(i, 1);
+      renderKitComponentRows();
+    };
+
+    window.updateKitComponent = function(i, field, val) {
+      window._kitComponents[i][field] = field === "value" ? (parseFloat(val) || 0) : val;
+      if (field === "value") renderKitComponentRows(); // refresh total
+    };
+
+    function renderKitComponentRows() {
+      const c = document.getElementById("kit-components-list");
+      if (!c) return;
+      c.innerHTML = "";
+      let total = 0;
+      window._kitComponents.forEach((comp, i) => {
+        total += comp.value || 0;
+        const row = document.createElement("div");
+        row.style.cssText = "border:1px solid var(--border);border-radius:8px;padding:8px;margin-bottom:8px;";
+        row.innerHTML = `
+          <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;">
+            <input type="text" placeholder="Part name" value="${comp.name}" style="flex:2;padding:8px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:.85rem;" data-field="name" data-idx="${i}">
+            <select style="flex:1.2;padding:8px 6px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:.8rem;" data-field="status" data-idx="${i}">
+              <option value="available" ${comp.status==="available"?"selected":""}>Available</option>
+              <option value="broken"    ${comp.status==="broken"   ?"selected":""}>Broken</option>
+              <option value="missing"   ${comp.status==="missing"  ?"selected":""}>Missing</option>
+            </select>
+            <input type="number" placeholder="$" value="${comp.value||""}" step="0.01" min="0" style="flex:1;padding:8px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:.85rem;" data-field="value" data-idx="${i}">
+            <button type="button" style="background:none;border:none;color:var(--red);font-size:1.1rem;cursor:pointer;padding:4px 8px;" data-remove="${i}">&#10005;</button>
+          </div>
+          <input type="url" placeholder="Reorder link (optional)" value="${comp.reorderLink||""}" style="width:100%;padding:7px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:.78rem;" data-field="reorderLink" data-idx="${i}">
+        `;
+        c.appendChild(row);
+      });
+      if (window._kitComponents.length) {
+        const totalRow = document.createElement("div");
+        totalRow.style.cssText = "font-size:.85rem;color:var(--sky);font-weight:700;text-align:right;margin-top:4px;";
+        totalRow.textContent = "Total: $" + total.toFixed(2);
+        c.appendChild(totalRow);
+      }
+      // Wire up listeners
+      c.querySelectorAll("[data-field]").forEach(el => {
+        el.addEventListener("input", function() {
+          updateKitComponent(parseInt(this.dataset.idx), this.dataset.field, this.value);
+        });
+        el.addEventListener("change", function() {
+          updateKitComponent(parseInt(this.dataset.idx), this.dataset.field, this.value);
+        });
+      });
+      c.querySelectorAll("[data-remove]").forEach(el => {
+        el.addEventListener("click", function() { removeKitComponentRow(parseInt(this.dataset.remove)); });
+      });
+    }
 
     window.previewId = function() {
       const name = document.getElementById("m-name")?.value.trim();
@@ -1290,13 +1372,14 @@
       const purchase     = document.getElementById("m-purchase")?.value.trim() || "";
       const reorder      = document.getElementById("m-reorder")?.value.trim() || "";
       const reminderDays = parseInt(document.getElementById("m-reminder")?.value) || 0;
+      const kitComponents = (window._kitComponents || []).filter(c => c.name.trim());
       if (!name || !eqId) { alert("Name and ID required."); return; }
       if (Object.values(equipmentMap).some(d=>d.eqId===eqId)) { alert(eqId+" already in use."); return; }
       await addDoc(collection(db,"equipment"), {
         name, eqId, status:"available",
         manufacturer, modelNumber, replacementValue: value,
         placeOfPurchase: purchase, reorderLink: reorder,
-        reminderDays,
+        reminderDays, kitComponents,
         createdAt: serverTimestamp()
       });
       await addLog({ action:"ADDED", equipmentName:name+" ("+eqId+")", userId:currentUser.uid, userName:currentUser.displayName||currentUser.email });
@@ -1382,9 +1465,16 @@
           <input id="m-reorder" type="url" value="${d.reorderLink||""}" placeholder="https://..."></div>
         <div class="form-group"><label>Return Reminder (days, 0 = off)</label>
           <input id="m-reminder" type="number" value="${d.reminderDays||7}" min="0"></div>
+        <div class="form-group"><label>Kit Components (optional)</label>
+          <div id="kit-components-list"></div>
+          <button type="button" class="tbtn tbtn-muted" style="width:100%;margin-top:6px;" onclick="addKitComponentRow()">+ Add Component</button>
+          <div style="font-size:.72rem;color:var(--muted);margin-top:4px;">Add individual parts (hose, pump, cord) with their own status and value.</div>
+        </div>
         ${d.eqId?`<button class="tbtn tbtn-muted" style="width:100%;margin-bottom:8px" onclick="showQRById('${id}')">&#9638; View QR Code</button>`:""}
         <button class="delete-btn" onclick="deleteEquipment('${id}')">&#128465; Delete Unit</button>
       `;
+      window._kitComponents = (d.kitComponents || []).map(c => ({...c}));
+      renderKitComponentRows();
       document.getElementById("modal-confirm").textContent = "Save";
       document.getElementById("modal-confirm").style.display = "";
       document.getElementById("modal-confirm").onclick = ()=>confirmEdit(id);
@@ -1401,12 +1491,13 @@
       const purchase     = document.getElementById("m-purchase")?.value.trim() || "";
       const reorder      = document.getElementById("m-reorder")?.value.trim() || "";
       const reminderDays = parseInt(document.getElementById("m-reminder")?.value) || 0;
+      const kitComponents = (window._kitComponents || []).filter(c => c.name.trim());
       if (!name) { alert("Name required."); return; }
       await updateDoc(doc(db,"equipment",id), {
         name, eqId, status,
         manufacturer, modelNumber, replacementValue: value,
         placeOfPurchase: purchase, reorderLink: reorder,
-        reminderDays
+        reminderDays, kitComponents
       });
       await addLog({ action:"EDITED", equipmentName:name+" ("+eqId+")", userId:currentUser.uid, userName:currentUser.displayName||currentUser.email });
       closeModal();
@@ -1419,6 +1510,57 @@
       await deleteDoc(doc(db,"equipment",id));
       await addLog({ action:"DELETED", equipmentName:name, userId:currentUser.uid, userName:currentUser.displayName||currentUser.email });
       closeModal();
+    };
+
+    window.duplicateEquipment = async function(id) {
+      const snap = await getDoc(doc(db,"equipment",id));
+      const d = snap.data();
+      if (!d) return;
+
+      // Parse the existing eqId to get its exact prefix (e.g. "Pump Kit-1" -> prefix "Pump Kit", num 1)
+      // This preserves the original naming pattern instead of using generic getPrefix logic.
+      let newEqId;
+      const match = (d.eqId || "").match(/^(.*)-(\d+)$/);
+      if (match) {
+        const prefix = match[1];
+        const allIds = Object.values(equipmentMap).map(e => e.eqId || "");
+        const nums = allIds
+          .filter(eid => eid.toLowerCase().startsWith(prefix.toLowerCase() + "-"))
+          .map(eid => parseInt(eid.split("-").pop()) || 0);
+        const nextNum = (nums.length ? Math.max(...nums) : 0) + 1;
+        newEqId = prefix + "-" + nextNum;
+      } else {
+        // Fallback: no numeric suffix found, use generic prefix logic
+        const prefix = getPrefix(d.name);
+        const allIds = Object.values(equipmentMap).map(e=>e.eqId||"");
+        newEqId = prefix + "-" + nextIdForPrefix(prefix, allIds);
+      }
+
+      if (!confirm("Duplicate " + (d.eqId||d.name) + " as " + newEqId + "?")) return;
+
+      try {
+        const newDoc = {
+          name: d.name,
+          eqId: newEqId,
+          status: "available", // always start fresh, not broken/missing/out
+          manufacturer: d.manufacturer || "",
+          modelNumber: d.modelNumber || "",
+          replacementValue: d.replacementValue || 0,
+          placeOfPurchase: d.placeOfPurchase || "",
+          reorderLink: d.reorderLink || "",
+          reminderDays: d.reminderDays ?? 7,
+          createdAt: serverTimestamp()
+        };
+        // Duplicate kit components fresh (all available, no carried-over broken/missing state)
+        if (d.kitComponents && d.kitComponents.length) {
+          newDoc.kitComponents = d.kitComponents.map(c => ({ name: c.name, status: "available", value: c.value || 0, reorderLink: c.reorderLink || "" }));
+        }
+        await addDoc(collection(db,"equipment"), newDoc);
+        await addLog({ action:"ADDED", equipmentName:d.name+" ("+newEqId+") — duplicated from "+(d.eqId||id), userId:currentUser.uid, userName:currentUser.displayName||currentUser.email });
+        showToast(newEqId + " created as a copy of " + (d.eqId||d.name));
+      } catch(e) {
+        alert("Error duplicating: " + e.message);
+      }
     };
 
     window.markMissing = function(id, name) {
@@ -1725,6 +1867,54 @@
             d.replacementValue?"$"+parseFloat(d.replacementValue).toFixed(2):"",
             d.placeOfPurchase||""
           ]));
+      } else if (type === "broken") {
+        title = "COMC Broken Equipment — " + new Date().toLocaleDateString();
+        headers = ["ID","Name","Manufacturer","Model","Replacement Value","Place of Purchase","Notes"];
+        const broken = Object.entries(equipmentMap).filter(([,d])=>d.status==="broken");
+        if (!broken.length) { showToast("No broken equipment."); return; }
+        broken.sort((a,b)=>(a[1].eqId||"").localeCompare(b[1].eqId||"",undefined,{numeric:true}))
+          .forEach(([,d]) => rows.push([
+            d.eqId||"", d.name||"", d.manufacturer||"", d.modelNumber||"",
+            d.replacementValue?"$"+parseFloat(d.replacementValue).toFixed(2):"",
+            d.placeOfPurchase||"", d.brokenNote||""
+          ]));
+      } else if (type === "open-calls") {
+        title = "COMC Open Calls — " + new Date().toLocaleDateString();
+        headers = ["Call #","Opened","Days Out","Location","Member","Phone","Equipment","Notes"];
+        const snap = await getDocs(collection(db,"calls"));
+        const calls = [];
+        snap.forEach(d => { const c=d.data(); if (c.status==="open") calls.push(c); });
+        if (!calls.length) { showToast("No open calls."); return; }
+        calls.sort((a,b) => (a.openedAt?.seconds||0) - (b.openedAt?.seconds||0));
+        const now = Date.now();
+        calls.forEach(c => {
+          const opened = c.openedAt?.toDate();
+          const daysOut = opened ? Math.floor((now-opened.getTime())/(1000*60*60*24)) : 0;
+          rows.push([
+            c.callNumber||"", opened?opened.toLocaleString():"", daysOut+" day"+(daysOut!==1?"s":""),
+            c.location||"", c.memberName||"", c.callerPhone||"",
+            (c.items||[]).map(i=>i.eqId||i.name).join(", "),
+            c.notes||""
+          ]);
+        });
+      } else if (type === "calls") {
+        title = "COMC Call Log — " + new Date().toLocaleDateString();
+        headers = ["Call #","Status","Opened","Closed","Location","Member","Phone","Equipment","Notes"];
+        const snap = await getDocs(collection(db,"calls"));
+        const calls = [];
+        snap.forEach(d => calls.push(d.data()));
+        calls.sort((a,b) => (b.openedAt?.seconds||0) - (a.openedAt?.seconds||0));
+        calls.forEach(c => {
+          const opened = c.openedAt?.toDate();
+          const closed = c.closedAt?.toDate();
+          rows.push([
+            c.callNumber||"", (c.status||"").toUpperCase(),
+            opened?opened.toLocaleString():"", closed?closed.toLocaleString():"",
+            c.location||"", c.memberName||"", c.callerPhone||"",
+            (c.items||[]).map(i=>i.eqId||i.name).join(", "),
+            c.notes||""
+          ]);
+        });
       } else if (type === "log") {
         title = "COMC Activity Log — " + new Date().toLocaleDateString();
         headers = ["Date/Time","Action","Equipment","Call #","Location","Member","Items/Notes","By"];
@@ -2028,6 +2218,17 @@
     .sum-missing   {font-size:.72rem;color:var(--orange);font-weight:700;background:rgba(232,112,64,.15);padding:3px 8px;border-radius:20px;}
     .btn-missing   {background:rgba(232,112,64,.15);color:var(--orange);}
     .broken-note{font-size:.78rem;color:var(--red);margin-bottom:8px;}
+    .kit-contents{font-size:.78rem;color:var(--text);background:var(--surface2);border-radius:6px;padding:8px 10px;margin:6px 0;line-height:1.5;}
+    .kit-contents strong{color:var(--sky);display:block;margin-bottom:4px;}
+    .kit-comp-row{display:flex;align-items:center;gap:8px;padding:3px 0;font-size:.78rem;}
+    .kit-comp-name{flex:1;color:var(--text);}
+    .kit-comp-status{font-family:'Barlow Condensed',sans-serif;font-size:.66rem;font-weight:700;padding:2px 6px;border-radius:10px;letter-spacing:.04em;}
+    .kit-status-available{background:rgba(72,199,142,.2);color:var(--green);}
+    .kit-status-broken{background:rgba(240,80,80,.2);color:var(--red);}
+    .kit-status-missing{background:rgba(232,112,64,.2);color:var(--orange);}
+    .kit-comp-value{color:var(--muted);font-size:.72rem;min-width:50px;text-align:right;}
+    .kit-comp-reorder{color:var(--green);text-decoration:none;font-size:.85rem;padding:0 2px;}
+    .kit-comp-total{text-align:right;font-weight:700;color:var(--sky);font-size:.8rem;margin-top:4px;padding-top:4px;border-top:1px solid var(--border);}
 
     /* SUMMARY CARD */
     .summary-card {
@@ -2071,6 +2272,7 @@
     .btn-broken{background:rgba(240,80,80,.2);color:var(--red);}
     .btn-qr{background:rgba(124,200,232,.15);color:var(--sky);}
     .btn-edit{background:rgba(255,189,0,.15);color:var(--yellow);}
+    .btn-duplicate{background:rgba(150,150,255,.15);color:#a0a0ff;}
 
     /* CHECKOUT FORM */
     .co-form{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:14px;}
@@ -2271,10 +2473,10 @@
     <div class="tab active" data-tab="checkout"  onclick="switchTab('checkout',this)">&#128229; Check Out</div>
     <div class="tab"        data-tab="checkin"   onclick="switchTab('checkin',this)">&#128228; Check In</div>
     <div class="tab admin-only" data-tab="inventory" onclick="switchTab('inventory',this)">&#128230; Inventory</div>
+    <div class="tab"            data-tab="mycalls"   onclick="switchTab('mycalls',this)">&#128203; Call Log</div>
     <div class="tab admin-only" data-tab="users"    onclick="switchTab('users',this)">&#128101; Users</div>
-    <div class="tab admin-only" data-tab="log"      onclick="switchTab('log',this)">&#128203; Log</div>
+    <div class="tab admin-only" data-tab="log"      onclick="switchTab('log',this)">&#128203; Activity Log</div>
     <div class="tab admin-only" data-tab="reports"  onclick="switchTab('reports',this)">&#128196; Reports</div>
-    <div class="tab member-only" data-tab="mycalls"  onclick="switchTab('mycalls',this)">&#128203; Call Log</div>
   </div>
 
   <!-- CHECK OUT -->
@@ -2385,6 +2587,20 @@
     </div>
 
     <div class="report-group">
+      <div class="report-group-title">Call Log</div>
+      <div class="report-row">
+        <button class="report-btn report-pdf" onclick="generateReport('calls','pdf')">
+          <div class="report-icon">📄</div>
+          <div class="report-label">Call Log<span>PDF</span></div>
+        </button>
+        <button class="report-btn report-excel" onclick="generateReport('calls','excel')">
+          <div class="report-icon">📊</div>
+          <div class="report-label">Call Log<span>Excel</span></div>
+        </button>
+      </div>
+    </div>
+
+    <div class="report-group">
       <div class="report-group-title">Missing Equipment</div>
       <div class="report-row">
         <button class="report-btn report-pdf" onclick="generateReport('missing','pdf')">
@@ -2394,6 +2610,34 @@
         <button class="report-btn report-excel" onclick="generateReport('missing','excel')">
           <div class="report-icon">📊</div>
           <div class="report-label">Missing Equipment<span>Excel</span></div>
+        </button>
+      </div>
+    </div>
+
+    <div class="report-group">
+      <div class="report-group-title">Broken Equipment</div>
+      <div class="report-row">
+        <button class="report-btn report-pdf" onclick="generateReport('broken','pdf')">
+          <div class="report-icon">📄</div>
+          <div class="report-label">Broken Equipment<span>PDF</span></div>
+        </button>
+        <button class="report-btn report-excel" onclick="generateReport('broken','excel')">
+          <div class="report-icon">📊</div>
+          <div class="report-label">Broken Equipment<span>Excel</span></div>
+        </button>
+      </div>
+    </div>
+
+    <div class="report-group">
+      <div class="report-group-title">Open Calls</div>
+      <div class="report-row">
+        <button class="report-btn report-pdf" onclick="generateReport('open-calls','pdf')">
+          <div class="report-icon">📄</div>
+          <div class="report-label">Open Calls<span>PDF</span></div>
+        </button>
+        <button class="report-btn report-excel" onclick="generateReport('open-calls','excel')">
+          <div class="report-icon">📊</div>
+          <div class="report-label">Open Calls<span>Excel</span></div>
         </button>
       </div>
     </div>
