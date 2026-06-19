@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
   <title>COMC Equipment Manager</title>
+  <link rel="icon" type="image/png" href="https://i.ibb.co/WWx03S58/updated-logo.png">
   <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800&family=Barlow:wght@400;500;600&display=swap" rel="stylesheet">
   <!-- Google Places Autocomplete -->
   <script>
@@ -301,11 +302,14 @@
             <div class="kit-contents">
               <strong>&#128230; Kit Components:</strong>
               ${d.kitComponents.map(c => `
-                <div class="kit-comp-row">
-                  <span class="kit-comp-name">${c.name}</span>
-                  <span class="kit-comp-status kit-status-${c.status}">${c.status==="available"?"OK":c.status==="broken"?"BROKEN":"MISSING"}</span>
-                  ${c.value ? `<span class="kit-comp-value">$${parseFloat(c.value).toFixed(2)}</span>` : ""}
-                  ${c.reorderLink && currentRole==="admin" ? `<a href="${c.reorderLink}" target="_blank" class="kit-comp-reorder">&#128722;</a>` : ""}
+                <div class="kit-comp-block">
+                  <div class="kit-comp-row">
+                    <span class="kit-comp-name">${c.name}</span>
+                    <span class="kit-comp-status kit-status-${c.status}">${c.status==="available"?"OK":c.status==="broken"?"BROKEN":"MISSING"}</span>
+                    ${c.value ? `<span class="kit-comp-value">$${parseFloat(c.value).toFixed(2)}</span>` : ""}
+                    ${c.reorderLink && currentRole==="admin" ? `<a href="${c.reorderLink}" target="_blank" class="kit-comp-reorder">&#128722; Reorder</a>` : ""}
+                  </div>
+                  ${(c.manufacturer||c.modelNumber||c.placeOfPurchase) ? `<div class="kit-comp-sub">${[c.manufacturer,c.modelNumber,c.placeOfPurchase].filter(Boolean).join(" &middot; ")}</div>` : ""}
                 </div>
               `).join("")}
               <div class="kit-comp-total">Total: $${d.kitComponents.reduce((s,c)=>s+(parseFloat(c.value)||0),0).toFixed(2)}</div>
@@ -1297,7 +1301,7 @@
     };
 
     window.addKitComponentRow = function() {
-      window._kitComponents.push({ name: "", status: "available", value: 0, reorderLink: "" });
+      window._kitComponents.push({ name: "", status: "available", value: 0, manufacturer: "", modelNumber: "", placeOfPurchase: "", reorderLink: "" });
       renderKitComponentRows();
     };
 
@@ -1319,19 +1323,26 @@
       window._kitComponents.forEach((comp, i) => {
         total += comp.value || 0;
         const row = document.createElement("div");
-        row.style.cssText = "border:1px solid var(--border);border-radius:8px;padding:8px;margin-bottom:8px;";
+        row.style.cssText = "border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:10px;";
         row.innerHTML = `
-          <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;">
+          <div style="display:flex;gap:6px;align-items:center;margin-bottom:8px;">
             <input type="text" placeholder="Part name" value="${comp.name}" style="flex:2;padding:8px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:.85rem;" data-field="name" data-idx="${i}">
             <select style="flex:1.2;padding:8px 6px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:.8rem;" data-field="status" data-idx="${i}">
               <option value="available" ${comp.status==="available"?"selected":""}>Available</option>
               <option value="broken"    ${comp.status==="broken"   ?"selected":""}>Broken</option>
               <option value="missing"   ${comp.status==="missing"  ?"selected":""}>Missing</option>
             </select>
-            <input type="number" placeholder="$" value="${comp.value||""}" step="0.01" min="0" style="flex:1;padding:8px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:.85rem;" data-field="value" data-idx="${i}">
             <button type="button" style="background:none;border:none;color:var(--red);font-size:1.1rem;cursor:pointer;padding:4px 8px;" data-remove="${i}">&#10005;</button>
           </div>
-          <input type="url" placeholder="Reorder link (optional)" value="${comp.reorderLink||""}" style="width:100%;padding:7px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:.78rem;" data-field="reorderLink" data-idx="${i}">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px;">
+            <input type="text" placeholder="Manufacturer" value="${comp.manufacturer||""}" style="padding:7px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:.78rem;" data-field="manufacturer" data-idx="${i}">
+            <input type="text" placeholder="Model Number" value="${comp.modelNumber||""}" style="padding:7px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:.78rem;" data-field="modelNumber" data-idx="${i}">
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px;">
+            <input type="number" placeholder="Replacement Value ($)" value="${comp.value||""}" step="0.01" min="0" style="padding:7px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:.78rem;" data-field="value" data-idx="${i}">
+            <input type="text" placeholder="Place of Purchase" value="${comp.placeOfPurchase||""}" style="padding:7px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:.78rem;" data-field="placeOfPurchase" data-idx="${i}">
+          </div>
+          <input type="url" placeholder="Reorder Link" value="${comp.reorderLink||""}" style="width:100%;padding:7px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:.78rem;" data-field="reorderLink" data-idx="${i}">
         `;
         c.appendChild(row);
       });
@@ -1553,7 +1564,11 @@
         };
         // Duplicate kit components fresh (all available, no carried-over broken/missing state)
         if (d.kitComponents && d.kitComponents.length) {
-          newDoc.kitComponents = d.kitComponents.map(c => ({ name: c.name, status: "available", value: c.value || 0, reorderLink: c.reorderLink || "" }));
+          newDoc.kitComponents = d.kitComponents.map(c => ({
+            name: c.name, status: "available", value: c.value || 0,
+            manufacturer: c.manufacturer || "", modelNumber: c.modelNumber || "",
+            placeOfPurchase: c.placeOfPurchase || "", reorderLink: c.reorderLink || ""
+          }));
         }
         await addDoc(collection(db,"equipment"), newDoc);
         await addLog({ action:"ADDED", equipmentName:d.name+" ("+newEqId+") — duplicated from "+(d.eqId||id), userId:currentUser.uid, userName:currentUser.displayName||currentUser.email });
@@ -2105,34 +2120,187 @@
       await sendPasswordResetEmail(auth,email); showToast("Reset email sent to "+email);
     };
 
+    window.exportUsers = async function() {
+      const snap = await getDocs(collection(db,"users"));
+      const rows = [["Name","Unit Number","Email","Role"]];
+      snap.forEach(d => {
+        const u = d.data();
+        rows.push([u.displayName||"", u.unitNumber||"", u.email||"", u.role||"member"]);
+      });
+      const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(",")).join("\n");
+      const a = document.createElement("a");
+      a.href = "data:text/csv;charset=utf-8," + encodeURIComponent(csv);
+      a.download = "comc-users-" + new Date().toISOString().slice(0,10) + ".csv";
+      a.click();
+      showToast("Users exported as CSV");
+    };
+
+    window.importUsers = async function(input) {
+      const file = input.files[0]; if (!file) return;
+      const status = document.getElementById("import-status");
+      status.style.display = ""; status.textContent = "Reading file...";
+
+      try {
+        // Load SheetJS dynamically to parse XLSX
+        if (!window.XLSX) {
+          await new Promise((res, rej) => {
+            const s = document.createElement("script");
+            s.src = "https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js";
+            s.onload = res; s.onerror = rej;
+            document.head.appendChild(s);
+          });
+        }
+
+        const buf = await file.arrayBuffer();
+        const wb  = window.XLSX.read(buf, { type: "array" });
+        const ws  = wb.Sheets[wb.SheetNames[0]];
+        const raw = window.XLSX.utils.sheet_to_json(ws, { defval: "" });
+
+        if (!raw.length) { status.textContent = "❌ No data found in file."; input.value=""; return; }
+
+        // Detect column names flexibly (handle XLSX roster format)
+        const sample = raw[0];
+        const keys = Object.keys(sample);
+        const col = k => keys.find(h => h.toLowerCase().includes(k)) || "";
+        const unitCol  = col("unit");
+        const nameCol  = col("name");
+        const emailCol = col("email");
+        const statusCol= col("status");
+
+        if (!unitCol || !nameCol || !emailCol) {
+          status.textContent = "❌ Could not find Unit, Name, or Email columns.";
+          input.value=""; return;
+        }
+
+        // Filter and map rows
+        const rows = raw.map(r => ({
+          unit:   (r[unitCol]  ||"").toString().trim(),
+          name:   (r[nameCol]  ||"").toString().trim(),
+          email:  (r[emailCol] ||"").toString().trim().toLowerCase(),
+          status: (r[statusCol]||"").toString().trim().toLowerCase(),
+        })).filter(r => {
+          if (!r.unit || !r.email) return false;
+          // Skip inactive
+          if (r.status === "inactive") return false;
+          return true;
+        });
+
+        if (!rows.length) { status.textContent = "❌ No importable rows (all inactive or missing unit/email)."; input.value=""; return; }
+
+        // Role mapping:
+        // Coordinator → admin
+        // Active / ActiveDispatch / Dispatcher → member
+        const getRole = s => s === "coordinator" ? "admin" : "member";
+
+        if (!confirm(`Import ${rows.length} users?\n• Coordinators → Admin\n• Active/Dispatcher → Member\n• Inactive → Skipped\n\nExisting users with matching email will be updated.`)) {
+          input.value=""; status.style.display="none"; return;
+        }
+
+        status.textContent = `Importing 0 / ${rows.length}...`;
+        let done = 0; let skipped = 0;
+
+        const existing = await getDocs(collection(db,"users"));
+        const emailMap = {};
+        const unitMap  = {};
+        const stripPrefix = u => (u||"").toString().trim().replace(/^MC-/i,"").toLowerCase();
+        existing.forEach(d => {
+          const u = d.data();
+          if (u.email) emailMap[u.email.toLowerCase()] = d.id;
+          if (u.unitNumber) unitMap[stripPrefix(u.unitNumber)] = d.id;
+        });
+
+        for (const r of rows) {
+          try {
+            const userData = {
+              displayName: r.name,
+              unitNumber:  r.unit,  // store full value from Excel e.g. "MC-151"
+              email:       r.email,
+              role:        getRole(r.status),
+            };
+            const existingId = emailMap[r.email] || unitMap[stripPrefix(r.unit)];
+            if (existingId) { await updateDoc(doc(db,"users",existingId), userData); }
+            else             { await addDoc(collection(db,"users"), userData); }
+            done++;
+          } catch(e) { skipped++; }
+          status.textContent = `Importing ${done} / ${rows.length}...`;
+        }
+
+        status.textContent = `✅ Done — ${done} imported, ${skipped} skipped.`;
+        input.value = "";
+        window.loadUsers();
+
+      } catch(e) {
+        status.textContent = "❌ Error: " + e.message;
+        input.value = "";
+      }
+    };
+
+    window._userFilter = "all";
+
+    window.setUserFilter = function(f, el) {
+      window._userFilter = f;
+      document.querySelectorAll(".user-filter-btn").forEach(b => b.classList.remove("active"));
+      if (el) el.classList.add("active");
+      window.renderUsers();
+    };
+
+    window._allUsers = [];
+
+    window.renderUsers = function() {
+      const c = document.getElementById("users-list"); if (!c) return;
+      const f = window._userFilter;
+      let users = window._allUsers.slice();
+
+      // Filter
+      if (f === "member")     users = users.filter(u => u.role === "member" && !isDispatcher(u));
+      else if (f === "dispatcher") users = users.filter(u => isDispatcher(u));
+      else if (f === "admin") users = users.filter(u => u.role === "admin");
+
+      c.innerHTML = "";
+      if (!users.length) { c.innerHTML = '<div class="empty">No users found.</div>'; return; }
+      users.forEach(u => {
+        const card = document.createElement("div");
+        card.className = "user-card";
+        const typeLabel = u.role==="admin" ? "Coordinator" : isDispatcher(u) ? "Dispatcher" : "Responder";
+        const badgeClass = u.role==="admin" ? "role-admin" : isDispatcher(u) ? "role-dispatcher" : "role-member";
+        card.innerHTML = `
+          <div class="user-info-row">
+            <div class="user-avatar">${(u.displayName||u.email||"?")[0].toUpperCase()}</div>
+            <div class="user-details">
+              <div class="user-display-name">${u.displayName||"—"}</div>
+              <div class="user-email">${u.unitNumber||"???"} &bull; ${u.email||"—"}</div>
+            </div>
+            <div class="user-role-badge ${badgeClass}">${typeLabel}</div>
+          </div>
+          <div class="user-actions">
+            <button class="user-btn" onclick="editUser('${u.id}')">&#9998; Edit</button>
+            <button class="user-btn" onclick="sendReset('${u.email}')">&#128274; Reset Password</button>
+          </div>`;
+        c.appendChild(card);
+      });
+    };
+
+    function isDispatcher(u) {
+      // Dispatchers have unit numbers starting with MCD- or MCA- prefix
+      const unit = (u.unitNumber||"").toUpperCase();
+      return unit.startsWith("MCD-") || unit.startsWith("MCA-");
+    }
+
+    function unitSortKey(unitStr) {
+      // Sort by numeric part: MC-151 → 151, MCD-3 → 3, MCA-1 → 1
+      const m = (unitStr||"").match(/(\d+)$/);
+      return m ? parseInt(m[1]) : 9999;
+    }
+
     window.loadUsers = function() {
       const c = document.getElementById("users-list"); if (!c) return;
       c.innerHTML = '<div class="loading">Loading...</div>';
       const u = onSnapshot(collection(db,"users"),
         snap => {
-          c.innerHTML = "";
-          if (snap.empty) { c.innerHTML='<div class="empty">No users found.</div>'; return; }
-          const users = [];
-          snap.forEach(d => users.push({id:d.id, ...d.data()}));
-          users.sort((a,b) => (a.displayName||"").localeCompare(b.displayName||""));
-          users.forEach(u => {
-            const card = document.createElement("div");
-            card.className = "user-card";
-            card.innerHTML = `
-              <div class="user-info-row">
-                <div class="user-avatar">${(u.displayName||u.email||"?")[0].toUpperCase()}</div>
-                <div class="user-details">
-                  <div class="user-display-name">${u.displayName||"—"}</div>
-                  <div class="user-email">MC-${u.unitNumber||"???"} &bull; ${u.email||"—"}</div>
-                </div>
-                <div class="user-role-badge ${u.role==="admin"?"role-admin":"role-member"}">${u.role||"member"}</div>
-              </div>
-              <div class="user-actions">
-                <button class="user-btn" onclick="editUser('${u.id}')">&#9998; Edit</button>
-                <button class="user-btn" onclick="sendReset('${u.email}')">&#128274; Reset Password</button>
-              </div>`;
-            c.appendChild(card);
-          });
+          window._allUsers = [];
+          snap.forEach(d => window._allUsers.push({id:d.id, ...d.data()}));
+          window._allUsers.sort((a,b) => unitSortKey(a.unitNumber) - unitSortKey(b.unitNumber));
+          window.renderUsers();
         },
         err => {
           console.error("loadUsers error:", err);
@@ -2227,7 +2395,9 @@
     .kit-status-broken{background:rgba(240,80,80,.2);color:var(--red);}
     .kit-status-missing{background:rgba(232,112,64,.2);color:var(--orange);}
     .kit-comp-value{color:var(--muted);font-size:.72rem;min-width:50px;text-align:right;}
-    .kit-comp-reorder{color:var(--green);text-decoration:none;font-size:.85rem;padding:0 2px;}
+    .kit-comp-reorder{color:var(--green);text-decoration:none;font-size:.68rem;font-weight:700;padding:2px 8px;border-radius:10px;background:rgba(72,199,142,.15);letter-spacing:.03em;white-space:nowrap;}
+    .kit-comp-block{margin-bottom:2px;}
+    .kit-comp-sub{font-size:.68rem;color:var(--muted);padding-left:2px;margin-bottom:4px;}
     .kit-comp-total{text-align:right;font-weight:700;color:var(--sky);font-size:.8rem;margin-top:4px;padding-top:4px;border-top:1px solid var(--border);}
 
     /* SUMMARY CARD */
@@ -2336,7 +2506,11 @@
     .user-details{flex:1;min-width:0;}.user-display-name{font-weight:600;font-size:.95rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
     .user-email{font-size:.75rem;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
     .user-role-badge{font-family:'Barlow Condensed',sans-serif;font-size:.7rem;font-weight:700;letter-spacing:.08em;padding:3px 8px;border-radius:20px;flex-shrink:0;text-transform:uppercase;}
-    .role-admin{background:rgba(124,200,232,.2);color:var(--sky);}.role-member{background:rgba(122,154,176,.15);color:var(--muted);}
+    .role-admin{background:rgba(124,200,232,.2);color:var(--sky);}
+    .role-member{background:rgba(122,154,176,.15);color:var(--muted);}
+    .role-dispatcher{background:rgba(255,189,0,.15);color:var(--yellow);}
+    .user-filter-btn{flex:1;padding:7px 4px;border:1px solid var(--border);border-radius:7px;background:var(--surface2);color:var(--muted);font-family:'Barlow Condensed',sans-serif;font-size:.8rem;font-weight:600;letter-spacing:.04em;cursor:pointer;text-transform:uppercase;}
+    .user-filter-btn.active{background:var(--sky);color:#0d1b2a;border-color:var(--sky);}
     .user-actions{display:flex;gap:8px;}.user-btn{flex:1;padding:8px;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:6px;font-family:'Barlow Condensed',sans-serif;font-size:.82rem;font-weight:600;letter-spacing:.04em;text-transform:uppercase;cursor:pointer;}
 
     /* MODAL */
@@ -2474,9 +2648,9 @@
     <div class="tab"        data-tab="checkin"   onclick="switchTab('checkin',this)">&#128228; Check In</div>
     <div class="tab admin-only" data-tab="inventory" onclick="switchTab('inventory',this)">&#128230; Inventory</div>
     <div class="tab"            data-tab="mycalls"   onclick="switchTab('mycalls',this)">&#128203; Call Log</div>
-    <div class="tab admin-only" data-tab="users"    onclick="switchTab('users',this)">&#128101; Users</div>
     <div class="tab admin-only" data-tab="log"      onclick="switchTab('log',this)">&#128203; Activity Log</div>
     <div class="tab admin-only" data-tab="reports"  onclick="switchTab('reports',this)">&#128196; Reports</div>
+    <div class="tab admin-only" data-tab="users"    onclick="switchTab('users',this)">&#128101; Users</div>
   </div>
 
   <!-- CHECK OUT -->
@@ -2540,8 +2714,22 @@
 
   <!-- USERS -->
   <div id="tab-users" class="tab-content">
-    <div class="toolbar">
+    <div class="toolbar" style="display:flex;flex-direction:column;gap:8px;">
       <button class="tbtn tbtn-primary" onclick="showAddUser()" style="width:100%">+ Add New User</button>
+      <div style="display:flex;gap:6px;">
+        <button class="user-filter-btn active" onclick="setUserFilter('all',this)">All</button>
+        <button class="user-filter-btn" onclick="setUserFilter('member',this)">Responders</button>
+        <button class="user-filter-btn" onclick="setUserFilter('dispatcher',this)">Dispatchers</button>
+        <button class="user-filter-btn" onclick="setUserFilter('admin',this)">Coordinators</button>
+      </div>
+      <div style="display:flex;gap:8px;">
+        <button class="tbtn tbtn-muted" onclick="exportUsers()" style="flex:1">&#11015; Export CSV</button>
+        <label class="tbtn tbtn-muted" style="flex:1;text-align:center;cursor:pointer;margin:0;">
+          &#11014; Import CSV
+          <input type="file" accept=".xlsx,.csv" id="users-import-input" style="display:none;" onchange="importUsers(this)">
+        </label>
+      </div>
+      <div id="import-status" style="font-size:.78rem;color:var(--muted);display:none;"></div>
     </div>
     <div id="users-list"></div>
   </div>
