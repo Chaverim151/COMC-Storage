@@ -2329,7 +2329,7 @@
       unsubs.push(u);
     }
 
-    // ── ISSUED GEAR ────────────────────────────────────────────────
+    // ── ISSUED EQUIPMENT ────────────────────────────────────────────
     window._allIssuedGear = [];
     window._issuedFilter  = "out";
 
@@ -2355,7 +2355,7 @@
         },
         err => {
           console.error("loadIssuedGear error:", err);
-          c.innerHTML = '<div class="empty" style="color:var(--red)">Error loading issued gear: ' + err.message + '</div>';
+          c.innerHTML = '<div class="empty" style="color:var(--red)">Error loading issued equipment: ' + err.message + '</div>';
         }
       );
       unsubs.push(u);
@@ -2390,7 +2390,7 @@
       );
 
       c.innerHTML = "";
-      if (!items.length) { c.innerHTML = '<div class="empty">No issued gear found.</div>'; return; }
+      if (!items.length) { c.innerHTML = '<div class="empty">No issued equipment found.</div>'; return; }
       items.forEach(i => c.appendChild(buildGearCard(i)));
     };
 
@@ -2415,7 +2415,7 @@
       members.sort((a,b) => unitSortKey(a.unitNumber) - unitSortKey(b.unitNumber));
 
       c.innerHTML = "";
-      if (!members.length) { c.innerHTML = '<div class="empty">No responders currently have gear issued.</div>'; return; }
+      if (!members.length) { c.innerHTML = '<div class="empty">No responders currently have equipment issued.</div>'; return; }
 
       members.forEach(m => {
         const card = document.createElement("div");
@@ -2455,7 +2455,7 @@
 
       const heading = document.createElement("div");
       heading.style.cssText = "font-family:'Barlow Condensed',sans-serif;font-size:1.1rem;font-weight:700;color:var(--text);margin-bottom:10px;";
-      heading.textContent = "Gear issued to " + memberName;
+      heading.textContent = "Equipment issued to " + memberName;
       c.appendChild(heading);
 
       if (!items.length) {
@@ -2722,7 +2722,7 @@
     };
 
     window.deleteIssuedGear = async function(id) {
-      if (!confirm("Delete this issued gear record? This cannot be undone.")) return;
+      if (!confirm("Delete this issued equipment record? This cannot be undone.")) return;
       await deleteDoc(doc(db,"issuedGear",id));
       closeModal();
       showToast("Record deleted");
@@ -3078,7 +3078,7 @@
     <div class="tab"            data-tab="mycalls"   onclick="switchTab('mycalls',this)">&#128203; Call Log</div>
     <div class="tab admin-only" data-tab="log"      onclick="switchTab('log',this)">&#128203; Activity Log</div>
     <div class="tab admin-only" data-tab="reports"  onclick="switchTab('reports',this)">&#128196; Reports</div>
-    <div class="tab admin-only" data-tab="issued"   onclick="switchTab('issued',this)">&#127919; Issued Gear</div>
+    <div class="tab admin-only" data-tab="issued"   onclick="switchTab('issued',this)">&#127919; Issued Equipment</div>
     <div class="tab admin-only" data-tab="users"    onclick="switchTab('users',this)">&#128101; Users</div>
   </div>
 
@@ -3141,7 +3141,7 @@
     <div id="inventory-list"></div>
   </div>
 
-  <!-- ISSUED GEAR -->
+  <!-- ISSUED EQUIPMENT -->
   <div id="tab-issued" class="tab-content">
     <div class="toolbar" style="display:flex;flex-direction:column;gap:8px;">
       <div style="display:flex;gap:8px;">
