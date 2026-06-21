@@ -95,10 +95,29 @@
 
     async function lookupEmailByUnit(unit) {
       const snap = await getDocs(collection(db, "users"));
+      const target = String(unit).trim().replace(/^MC[A-Z]?-?/i,"").toLowerCase();
       let email = null;
-      snap.forEach(d => { if (String(d.data().unitNumber).trim() === String(unit).trim()) email = d.data().email; });
+      snap.forEach(d => {
+        const stored = String(d.data().unitNumber||"").trim().replace(/^MC[A-Z]?-?/i,"").toLowerCase();
+        if (stored === target) email = d.data().email;
+      });
       return email;
     }
+
+    window.togglePasswordVisibility = function() {
+      const input  = document.getElementById("l-pass");
+      const eye    = document.getElementById("l-pass-icon-eye");
+      const eyeOff = document.getElementById("l-pass-icon-eyeoff");
+      if (input.type === "password") {
+        input.type = "text";
+        eye.style.display = "none";
+        eyeOff.style.display = "";
+      } else {
+        input.type = "password";
+        eye.style.display = "";
+        eyeOff.style.display = "none";
+      }
+    };
 
     window.login = async function() {
       const unit = document.getElementById("l-unit").value.trim().replace(/^MC-?/i,"");
@@ -2310,7 +2329,404 @@
       unsubs.push(u);
     }
 
-    // ── MODAL / TOAST / HELPERS ───────────────────────────────────
+    // ── ISSUED GEAR ────────────────────────────────────────────────
+    window._allIssuedGear = [];
+    window._issuedFilter  = "out";
+
+    window.setIssuedFilter = function(f, el) {
+      window._issuedFilter = f;
+      window._issuedSelectedMember = null;
+      document.querySelectorAll("#tab-issued .user-filter-btn").forEach(b => b.classList.remove("active"));
+      if (el) el.classList.add("active");
+      window.renderIssuedGear();
+    };
+
+    window.filterIssuedGear = function() { window.renderIssuedGear(); };
+
+    window.loadIssuedGear = function() {
+      const c = document.getElementById("issued-list"); if (!c) return;
+      c.innerHTML = '<div class="loading">Loading...</div>';
+      const u = onSnapshot(collection(db,"issuedGear"),
+        snap => {
+          window._allIssuedGear = [];
+          snap.forEach(d => window._allIssuedGear.push({id:d.id, ...d.data()}));
+          window._allIssuedGear.sort((a,b) => (b.dateIssued?.seconds||0) - (a.dateIssued?.seconds||0));
+          window.renderIssuedGear();
+        },
+        err => {
+          console.error("loadIssuedGear error:", err);
+          c.innerHTML = '<div class="empty" style="color:var(--red)">Error loading issued gear: ' + err.message + '</div>';
+        }
+      );
+      unsubs.push(u);
+    };
+
+    window._issuedSelectedMember = null;
+
+    window.renderIssuedGear = function() {
+      const c = document.getElementById("issued-list"); if (!c) return;
+      const f = window._issuedFilter;
+      const q = (document.getElementById("issued-search")?.value || "").toLowerCase().trim();
+
+      // ── ISSUED OUT: grouped-by-member view ──
+      if (f === "out") {
+        // If a member is selected, show their items only
+        if (window._issuedSelectedMember) {
+          renderMemberGearDetail(window._issuedSelectedMember, q);
+          return;
+        }
+        renderMemberList(q);
+        return;
+      }
+
+      // ── STORAGE / ALL: flat list view ──
+      let items = window._allIssuedGear.slice();
+      if (f === "storage") items = items.filter(i => i.status === "storage");
+
+      if (q) items = items.filter(i =>
+        (i.responderName||"").toLowerCase().includes(q) ||
+        (i.itemName||"").toLowerCase().includes(q) ||
+        (i.unitNumber||"").toLowerCase().includes(q)
+      );
+
+      c.innerHTML = "";
+      if (!items.length) { c.innerHTML = '<div class="empty">No issued gear found.</div>'; return; }
+      items.forEach(i => c.appendChild(buildGearCard(i)));
+    };
+
+    function renderMemberList(q) {
+      const c = document.getElementById("issued-list");
+      const issuedItems = window._allIssuedGear.filter(i => i.status === "issued");
+
+      // Group by responderId
+      const byMember = {};
+      issuedItems.forEach(i => {
+        const key = i.responderId || i.responderName || "unknown";
+        if (!byMember[key]) byMember[key] = { responderName: i.responderName, unitNumber: i.unitNumber, responderId: i.responderId, items: [] };
+        byMember[key].items.push(i);
+      });
+
+      let members = Object.values(byMember);
+      if (q) members = members.filter(m =>
+        (m.responderName||"").toLowerCase().includes(q) ||
+        (m.unitNumber||"").toLowerCase().includes(q) ||
+        m.items.some(i => (i.itemName||"").toLowerCase().includes(q))
+      );
+      members.sort((a,b) => unitSortKey(a.unitNumber) - unitSortKey(b.unitNumber));
+
+      c.innerHTML = "";
+      if (!members.length) { c.innerHTML = '<div class="empty">No responders currently have gear issued.</div>'; return; }
+
+      members.forEach(m => {
+        const card = document.createElement("div");
+        card.className = "user-card";
+        card.style.cursor = "pointer";
+        card.innerHTML = `
+          <div class="user-info-row">
+            <div class="user-avatar">${(m.responderName||"?")[0].toUpperCase()}</div>
+            <div class="user-details">
+              <div class="user-display-name">${m.responderName||"Unknown"}</div>
+              <div class="user-email">${m.unitNumber?(m.unitNumber+" &bull; "):""}${m.items.length} item${m.items.length!==1?"s":""} issued</div>
+            </div>
+            <div class="user-role-badge role-admin">&#10095;</div>
+          </div>`;
+        card.onclick = () => {
+          window._issuedSelectedMember = m.responderId || m.responderName;
+          window.renderIssuedGear();
+        };
+        c.appendChild(card);
+      });
+    }
+
+    function renderMemberGearDetail(memberKey, q) {
+      const c = document.getElementById("issued-list");
+      let items = window._allIssuedGear.filter(i => i.status === "issued" && (i.responderId === memberKey || i.responderName === memberKey));
+      const memberName = items[0]?.responderName || "Responder";
+
+      if (q) items = items.filter(i => (i.itemName||"").toLowerCase().includes(q));
+
+      c.innerHTML = "";
+      const backRow = document.createElement("div");
+      backRow.className = "user-btn";
+      backRow.style.cssText = "display:inline-block;margin-bottom:12px;cursor:pointer;";
+      backRow.innerHTML = `&#8592; Back to all responders`;
+      backRow.onclick = () => { window._issuedSelectedMember = null; window.renderIssuedGear(); };
+      c.appendChild(backRow);
+
+      const heading = document.createElement("div");
+      heading.style.cssText = "font-family:'Barlow Condensed',sans-serif;font-size:1.1rem;font-weight:700;color:var(--text);margin-bottom:10px;";
+      heading.textContent = "Gear issued to " + memberName;
+      c.appendChild(heading);
+
+      if (!items.length) {
+        const empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent = "No items match.";
+        c.appendChild(empty);
+        return;
+      }
+      items.forEach(i => c.appendChild(buildGearCard(i)));
+    }
+
+    function buildGearCard(i) {
+      const card = document.createElement("div");
+      card.className = "user-card";
+      const issuedDate = i.dateIssued?.toDate ? i.dateIssued.toDate().toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}) : "—";
+      const isStorage  = i.status === "storage";
+      const badgeLabel = isStorage ? "In Storage" : "Issued";
+      const badgeClass = isStorage ? "role-dispatcher" : "role-admin";
+      const subLine = isStorage
+        ? "In storage &bull; Added " + issuedDate
+        : (i.responderName||"Unknown") + (i.unitNumber?(" &bull; "+i.unitNumber):"") + " &bull; Issued " + issuedDate;
+      card.innerHTML = `
+        <div class="user-info-row">
+          <div class="user-avatar">${isStorage ? "&#128230;" : (i.responderName||"?")[0].toUpperCase()}</div>
+          <div class="user-details">
+            <div class="user-display-name">${i.itemName||"—"}</div>
+            <div class="user-email">${subLine}</div>
+            ${i.notes ? `<div style="font-size:.72rem;color:var(--muted);margin-top:2px;">${i.notes}</div>` : ""}
+            ${(i.manufacturer||i.placeOfPurchase) ? `<div style="font-size:.7rem;color:var(--muted);margin-top:2px;">${[i.manufacturer,i.placeOfPurchase].filter(Boolean).join(" &middot; ")}</div>` : ""}
+            ${i.replacementValue ? `<div style="font-size:.72rem;color:var(--sky);margin-top:2px;">&#128176; $${parseFloat(i.replacementValue).toFixed(2)}</div>` : ""}
+          </div>
+          <div class="user-role-badge ${badgeClass}">${badgeLabel}</div>
+        </div>
+        <div class="user-actions">
+          ${isStorage ? `<button class="user-btn" onclick="issueFromStorage('${i.id}')">&#128229; Issue to Responder</button>` : ""}
+          ${i.status==="issued" ? `<button class="user-btn" onclick="reassignGear('${i.id}')">&#128260; Reassign</button>` : ""}
+          ${i.status==="issued" ? `<button class="user-btn" onclick="returnGearToStorage('${i.id}')">&#128230; Return to Storage</button>` : ""}
+          ${i.reorderLink ? `<a href="${i.reorderLink}" target="_blank" class="user-btn" style="text-decoration:none;display:inline-block;">&#128722; Reorder</a>` : ""}
+          <button class="user-btn" onclick="editIssuedGear('${i.id}')">&#9998; Edit</button>
+          <button class="user-btn" style="color:var(--red)" onclick="deleteIssuedGear('${i.id}')">&#128465; Delete</button>
+        </div>`;
+      return card;
+    }
+
+    window.showAddToStorage = function() {
+      const modal = document.getElementById("modal");
+      document.getElementById("modal-title").textContent = "Add to Storage";
+      document.getElementById("modal-body").innerHTML = `
+        <div class="form-group"><label>Item Name</label>
+          <input id="ig-item" type="text" placeholder="e.g. Reflective Vest, House Key, Impact Wrench"></div>
+        <div class="form-group"><label>Manufacturer</label>
+          <input id="ig-manufacturer" type="text" placeholder="e.g. Milwaukee, 5.11 Tactical"></div>
+        <div class="form-group"><label>Place of Purchase</label>
+          <input id="ig-purchase" type="text" placeholder="e.g. Home Depot, Amazon"></div>
+        <div class="form-group"><label>Replacement Value ($)</label>
+          <input id="ig-value" type="number" step="0.01" min="0" placeholder="0.00"></div>
+        <div class="form-group"><label>Reorder Link</label>
+          <input id="ig-reorder" type="url" placeholder="https://..."></div>
+        <div class="form-group"><label>Notes (optional)</label>
+          <input id="ig-notes" type="text" placeholder="e.g. Size L, Serial #1234"></div>
+      `;
+      document.getElementById("modal-confirm").textContent = "Add to Storage";
+      document.getElementById("modal-confirm").style.display = "";
+      document.getElementById("modal-confirm").onclick = confirmAddToStorage;
+      modal.style.display = "flex";
+    };
+
+    async function confirmAddToStorage() {
+      const item = document.getElementById("ig-item")?.value.trim();
+      const manufacturer = document.getElementById("ig-manufacturer")?.value.trim() || "";
+      const placeOfPurchase = document.getElementById("ig-purchase")?.value.trim() || "";
+      const replacementValue = parseFloat(document.getElementById("ig-value")?.value) || 0;
+      const reorderLink = document.getElementById("ig-reorder")?.value.trim() || "";
+      const notes = document.getElementById("ig-notes")?.value.trim() || "";
+      if (!item) { alert("Please enter an item name."); return; }
+      await addDoc(collection(db,"issuedGear"), {
+        responderId: "", responderName: "", unitNumber: "",
+        itemName: item,
+        manufacturer, placeOfPurchase, replacementValue, reorderLink,
+        notes,
+        status: "storage",
+        dateIssued: serverTimestamp(),
+        issuedBy: currentUser.displayName || currentUser.email
+      });
+      await addLog({ action:"ADDED", equipmentName: item + " (added to storage)", userId:currentUser.uid, userName:currentUser.displayName||currentUser.email });
+      closeModal();
+      showToast(item + " added to storage");
+    }
+
+    window.issueFromStorage = function(id) {
+      const item = window._allIssuedGear.find(g => g.id === id);
+      if (!item) return;
+      const modal = document.getElementById("modal");
+      document.getElementById("modal-title").textContent = "Issue: " + item.itemName;
+      document.getElementById("modal-body").innerHTML = `
+        <div class="form-group"><label>Responder</label>
+          <select id="ig-responder">
+            <option value="">— Select responder —</option>
+            ${window._allUsers.map(u=>`<option value="${u.id}" data-name="${u.displayName||u.email}" data-unit="${u.unitNumber||""}">${u.unitNumber?u.unitNumber+" — ":""}${u.displayName||u.email}</option>`).join("")}
+          </select>
+        </div>
+      `;
+      document.getElementById("modal-confirm").textContent = "Issue Item";
+      document.getElementById("modal-confirm").style.display = "";
+      document.getElementById("modal-confirm").onclick = async () => {
+        const sel = document.getElementById("ig-responder");
+        const opt = sel.options[sel.selectedIndex];
+        if (!sel.value) { alert("Please select a responder."); return; }
+        await updateDoc(doc(db,"issuedGear",id), {
+          responderId: sel.value,
+          responderName: opt.dataset.name || "",
+          unitNumber: opt.dataset.unit || "",
+          status: "issued",
+          dateIssued: serverTimestamp()
+        });
+        await addLog({ action:"ISSUED", equipmentName: item.itemName + " to " + (opt.dataset.name||""), userId:currentUser.uid, userName:currentUser.displayName||currentUser.email });
+        closeModal();
+        showToast(item.itemName + " issued to " + (opt.dataset.name||""));
+      };
+      modal.style.display = "flex";
+    };
+
+    window.showIssueGear = function() {
+      const modal = document.getElementById("modal");
+      document.getElementById("modal-title").textContent = "Issue New Item";
+      document.getElementById("modal-body").innerHTML = `
+        <div class="form-group"><label>Responder</label>
+          <select id="ig-responder">
+            <option value="">— Select responder —</option>
+            ${window._allUsers.map(u=>`<option value="${u.id}" data-name="${u.displayName||u.email}" data-unit="${u.unitNumber||""}">${u.unitNumber?u.unitNumber+" — ":""}${u.displayName||u.email}</option>`).join("")}
+          </select>
+        </div>
+        <div class="form-group"><label>Item Name</label>
+          <input id="ig-item" type="text" placeholder="e.g. Reflective Vest, House Key, Impact Wrench"></div>
+        <div class="form-group"><label>Manufacturer</label>
+          <input id="ig-manufacturer" type="text" placeholder="e.g. Milwaukee, 5.11 Tactical"></div>
+        <div class="form-group"><label>Place of Purchase</label>
+          <input id="ig-purchase" type="text" placeholder="e.g. Home Depot, Amazon"></div>
+        <div class="form-group"><label>Replacement Value ($)</label>
+          <input id="ig-value" type="number" step="0.01" min="0" placeholder="0.00"></div>
+        <div class="form-group"><label>Reorder Link</label>
+          <input id="ig-reorder" type="url" placeholder="https://..."></div>
+        <div class="form-group"><label>Notes (optional)</label>
+          <input id="ig-notes" type="text" placeholder="e.g. Key #12, Vest size L"></div>
+      `;
+      document.getElementById("modal-confirm").textContent = "Issue Item";
+      document.getElementById("modal-confirm").style.display = "";
+      document.getElementById("modal-confirm").onclick = confirmIssueGear;
+      modal.style.display = "flex";
+    };
+
+    async function confirmIssueGear() {
+      const sel = document.getElementById("ig-responder");
+      const opt = sel.options[sel.selectedIndex];
+      const item = document.getElementById("ig-item")?.value.trim();
+      const manufacturer = document.getElementById("ig-manufacturer")?.value.trim() || "";
+      const placeOfPurchase = document.getElementById("ig-purchase")?.value.trim() || "";
+      const replacementValue = parseFloat(document.getElementById("ig-value")?.value) || 0;
+      const reorderLink = document.getElementById("ig-reorder")?.value.trim() || "";
+      const notes = document.getElementById("ig-notes")?.value.trim() || "";
+      if (!sel.value || !item) { alert("Please select a responder and enter an item."); return; }
+      await addDoc(collection(db,"issuedGear"), {
+        responderId: sel.value,
+        responderName: opt.dataset.name || "",
+        unitNumber: opt.dataset.unit || "",
+        itemName: item,
+        manufacturer, placeOfPurchase, replacementValue, reorderLink,
+        notes,
+        status: "issued",
+        dateIssued: serverTimestamp(),
+        issuedBy: currentUser.displayName || currentUser.email
+      });
+      await addLog({ action:"ISSUED", equipmentName: item + " to " + (opt.dataset.name||""), userId:currentUser.uid, userName:currentUser.displayName||currentUser.email });
+      closeModal();
+      showToast(item + " issued to " + (opt.dataset.name||""));
+    }
+
+    window.returnGearToStorage = async function(id) {
+      const item = window._allIssuedGear.find(g => g.id === id);
+      if (!confirm("Return " + (item?.itemName||"this item") + " to storage?")) return;
+      await updateDoc(doc(db,"issuedGear",id), {
+        status: "storage",
+        responderId: "", responderName: "", unitNumber: "",
+        returnedAt: serverTimestamp()
+      });
+      await addLog({ action:"RETURNED", equipmentName: (item?.itemName||"item") + " (returned to storage)", userId:currentUser.uid, userName:currentUser.displayName||currentUser.email });
+      showToast((item?.itemName||"Item") + " returned to storage");
+    };
+
+    window.reassignGear = function(id) {
+      const item = window._allIssuedGear.find(g => g.id === id);
+      if (!item) return;
+      const modal = document.getElementById("modal");
+      document.getElementById("modal-title").textContent = "Reassign: " + item.itemName;
+      document.getElementById("modal-body").innerHTML = `
+        <div style="font-size:.82rem;color:var(--muted);margin-bottom:10px;">Currently with: ${item.responderName||"Unknown"}</div>
+        <div class="form-group"><label>New Responder</label>
+          <select id="ig-responder">
+            <option value="">— Select responder —</option>
+            ${window._allUsers.map(u=>`<option value="${u.id}" data-name="${u.displayName||u.email}" data-unit="${u.unitNumber||""}">${u.unitNumber?u.unitNumber+" — ":""}${u.displayName||u.email}</option>`).join("")}
+          </select>
+        </div>
+      `;
+      document.getElementById("modal-confirm").textContent = "Reassign";
+      document.getElementById("modal-confirm").style.display = "";
+      document.getElementById("modal-confirm").onclick = async () => {
+        const sel = document.getElementById("ig-responder");
+        const opt = sel.options[sel.selectedIndex];
+        if (!sel.value) { alert("Please select a responder."); return; }
+        const prevName = item.responderName || "Unknown";
+        await updateDoc(doc(db,"issuedGear",id), {
+          responderId: sel.value,
+          responderName: opt.dataset.name || "",
+          unitNumber: opt.dataset.unit || "",
+          status: "issued",
+          dateIssued: serverTimestamp()
+        });
+        await addLog({ action:"ISSUED", equipmentName: item.itemName + " (reassigned from " + prevName + " to " + (opt.dataset.name||"") + ")", userId:currentUser.uid, userName:currentUser.displayName||currentUser.email });
+        closeModal();
+        showToast(item.itemName + " reassigned to " + (opt.dataset.name||""));
+      };
+      modal.style.display = "flex";
+    };
+
+    window.editIssuedGear = async function(id) {
+      const snap = await getDoc(doc(db,"issuedGear",id));
+      const d = snap.data(); if (!d) return;
+      const modal = document.getElementById("modal");
+      document.getElementById("modal-title").textContent = "Edit Issued Item";
+      document.getElementById("modal-body").innerHTML = `
+        <div class="form-group"><label>Responder Name</label>
+          <input id="ig-edit-name" type="text" value="${d.responderName||""}"></div>
+        <div class="form-group"><label>Item Name</label>
+          <input id="ig-edit-item" type="text" value="${d.itemName||""}"></div>
+        <div class="form-group"><label>Manufacturer</label>
+          <input id="ig-edit-manufacturer" type="text" value="${d.manufacturer||""}"></div>
+        <div class="form-group"><label>Place of Purchase</label>
+          <input id="ig-edit-purchase" type="text" value="${d.placeOfPurchase||""}"></div>
+        <div class="form-group"><label>Replacement Value ($)</label>
+          <input id="ig-edit-value" type="number" step="0.01" min="0" value="${d.replacementValue||""}"></div>
+        <div class="form-group"><label>Reorder Link</label>
+          <input id="ig-edit-reorder" type="url" value="${d.reorderLink||""}"></div>
+        <div class="form-group"><label>Notes</label>
+          <input id="ig-edit-notes" type="text" value="${d.notes||""}"></div>
+        <button class="delete-btn" onclick="deleteIssuedGear('${id}')">&#128465; Delete Record</button>
+      `;
+      document.getElementById("modal-confirm").textContent = "Save";
+      document.getElementById("modal-confirm").style.display = "";
+      document.getElementById("modal-confirm").onclick = async () => {
+        const responderName = document.getElementById("ig-edit-name")?.value.trim();
+        const itemName = document.getElementById("ig-edit-item")?.value.trim();
+        const manufacturer = document.getElementById("ig-edit-manufacturer")?.value.trim() || "";
+        const placeOfPurchase = document.getElementById("ig-edit-purchase")?.value.trim() || "";
+        const replacementValue = parseFloat(document.getElementById("ig-edit-value")?.value) || 0;
+        const reorderLink = document.getElementById("ig-edit-reorder")?.value.trim() || "";
+        const notes = document.getElementById("ig-edit-notes")?.value.trim() || "";
+        if (!itemName) { alert("Item name required."); return; }
+        await updateDoc(doc(db,"issuedGear",id), { responderName, itemName, manufacturer, placeOfPurchase, replacementValue, reorderLink, notes });
+        closeModal();
+        showToast("Updated");
+      };
+      modal.style.display = "flex";
+    };
+
+    window.deleteIssuedGear = async function(id) {
+      if (!confirm("Delete this issued gear record? This cannot be undone.")) return;
+      await deleteDoc(doc(db,"issuedGear",id));
+      closeModal();
+      showToast("Record deleted");
+    };
     window.closeModal = function() {
       document.getElementById("modal").style.display="none";
       document.getElementById("modal-confirm").style.display="";
@@ -2624,7 +3040,19 @@
       <input type="text" id="l-unit" placeholder="Unit Number (e.g. 412 or D1)"
              style="margin-bottom:0;flex:1;" onkeydown="if(event.key==='Enter')login()">
     </div>
-    <input type="password" id="l-pass" placeholder="Password" onkeydown="if(event.key==='Enter')login()">
+    <div style="position:relative;margin-bottom:12px;">
+      <input type="password" id="l-pass" placeholder="Password" style="margin-bottom:0;padding-right:42px;" onkeydown="if(event.key==='Enter')login()">
+      <button type="button" onclick="togglePasswordVisibility()" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--muted);cursor:pointer;padding:6px;line-height:0;display:flex;align-items:center;" aria-label="Show password">
+        <svg id="l-pass-icon-eye" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8Z"></path>
+          <circle cx="12" cy="12" r="3"></circle>
+        </svg>
+        <svg id="l-pass-icon-eyeoff" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none;">
+          <path d="M17.94 17.94A10.94 10.94 0 0 1 12 20c-7 0-11-8-11-8a18.5 18.5 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path>
+          <line x1="1" y1="1" x2="23" y2="23"></line>
+        </svg>
+      </button>
+    </div>
     <button class="login-btn" onclick="login()">Sign In</button>
     <button class="forgot-btn" onclick="forgotPassword()">Forgot Password?</button>
     <div id="l-error"></div>
@@ -2650,6 +3078,7 @@
     <div class="tab"            data-tab="mycalls"   onclick="switchTab('mycalls',this)">&#128203; Call Log</div>
     <div class="tab admin-only" data-tab="log"      onclick="switchTab('log',this)">&#128203; Activity Log</div>
     <div class="tab admin-only" data-tab="reports"  onclick="switchTab('reports',this)">&#128196; Reports</div>
+    <div class="tab admin-only" data-tab="issued"   onclick="switchTab('issued',this)">&#127919; Issued Gear</div>
     <div class="tab admin-only" data-tab="users"    onclick="switchTab('users',this)">&#128101; Users</div>
   </div>
 
@@ -2710,6 +3139,23 @@
       <button class="tbtn tbtn-muted   admin-only" onclick="showBulkAdd()">+ Bulk</button>
     </div>
     <div id="inventory-list"></div>
+  </div>
+
+  <!-- ISSUED GEAR -->
+  <div id="tab-issued" class="tab-content">
+    <div class="toolbar" style="display:flex;flex-direction:column;gap:8px;">
+      <div style="display:flex;gap:8px;">
+        <button class="tbtn tbtn-primary" onclick="showIssueGear()" style="flex:1">+ Issue Item</button>
+        <button class="tbtn tbtn-muted" onclick="showAddToStorage()" style="flex:1">+ Add to Storage</button>
+      </div>
+      <input type="text" id="issued-search" placeholder="&#128269; Search by responder or item..." oninput="filterIssuedGear()">
+      <div style="display:flex;gap:6px;">
+        <button class="user-filter-btn active" onclick="setIssuedFilter('out',this)">Issued Out</button>
+        <button class="user-filter-btn" onclick="setIssuedFilter('storage',this)">In Storage</button>
+        <button class="user-filter-btn" onclick="setIssuedFilter('all',this)">All</button>
+      </div>
+    </div>
+    <div id="issued-list"></div>
   </div>
 
   <!-- USERS -->
@@ -2870,6 +3316,7 @@
     if(el) el.classList.add("active");
     document.getElementById("tab-"+name).classList.add("active");
     if (name === "users"   && window.loadUsers)      window.loadUsers();
+    if (name === "issued"  && window.loadIssuedGear)  window.loadIssuedGear();
     if (name === "log"     && window.reloadLog)       window.reloadLog();
     if (name === "mycalls" && window.reloadMyCalls)   window.reloadMyCalls();
   }
