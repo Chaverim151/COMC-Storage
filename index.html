@@ -389,6 +389,8 @@
       if (!name) {
         idSel.innerHTML = '<option value="">— Select type first —</option>';
         idSel.disabled = true;
+        const info = document.getElementById("co-unit-info");
+        if (info) info.textContent = "";
         return;
       }
       const stagedIds = checkoutItems.map(i => i.firestoreId);
@@ -407,7 +409,8 @@
       available.forEach(([id, d]) => {
         const opt = document.createElement("option");
         opt.value = id;
-        opt.textContent = (d.eqId || id);
+        const mfr = d.manufacturer ? ` — ${d.manufacturer}` : "";
+        opt.textContent = (d.eqId || id) + mfr;
         idSel.appendChild(opt);
       });
 
@@ -416,9 +419,21 @@
         idSel.value = available[0][0];
         idSel.style.borderColor = "var(--sky)";
         showToast("Only unit: " + (available[0][1].eqId || available[0][0]));
+        onIdSelect();
       } else {
         idSel.style.borderColor = "";
+        document.getElementById("co-unit-info").textContent = "";
       }
+    };
+
+    window.onIdSelect = function() {
+      const idSel = document.getElementById("co-id-select");
+      const info  = document.getElementById("co-unit-info");
+      if (!info) return;
+      const d = equipmentMap[idSel.value];
+      if (!d) { info.textContent = ""; return; }
+      const parts = [d.manufacturer, d.modelNumber].filter(Boolean);
+      info.textContent = parts.length ? parts.join(" · ") : "";
     };
 
     window.addItemToCheckout = function() {
@@ -1949,6 +1964,94 @@
             c.notes||""
           ]);
         });
+      } else if (type === "issued") {
+        const snap = await getDocs(collection(db,"issuedGear"));
+        const allItems = [];
+        snap.forEach(d => allItems.push(d.data()));
+        if (!allItems.length) { showToast("No issued equipment records found."); return; }
+        allItems.sort((a,b) => unitSortKey(a.unitNumber) - unitSortKey(b.unitNumber));
+
+        // Group by responder
+        const groups = {};
+        allItems.forEach(i => {
+          const key = i.responderId || i.responderName || "In Storage";
+          if (!groups[key]) groups[key] = { name: i.responderName||"In Storage", unit: i.unitNumber||"", items: [] };
+          groups[key].items.push(i);
+        });
+
+        const reportTitle = "COMC Issued Equipment — " + new Date().toLocaleDateString();
+
+        if (format === "pdf") {
+          let sections = "";
+          Object.values(groups).forEach(g => {
+            const label = g.unit ? g.unit + " — " + g.name : g.name;
+            const itemRows = g.items.map(i => {
+              const issued = i.dateIssued?.toDate ? i.dateIssued.toDate().toLocaleDateString() : "—";
+              const status = i.status === "storage" ? "In Storage" : "Issued Out";
+              return `<tr>
+                <td>${i.itemName||""}</td>
+                <td>${i.manufacturer||""}</td>
+                <td>${i.placeOfPurchase||""}</td>
+                <td>${i.replacementValue?"$"+parseFloat(i.replacementValue).toFixed(2):""}</td>
+                <td>${i.notes||""}</td>
+                <td>${issued}</td>
+                <td>${status}</td>
+              </tr>`;
+            }).join("");
+            sections += `
+              <div class="member-section">
+                <div class="member-header">${label}</div>
+                <table>
+                  <thead><tr><th>Item</th><th>Manufacturer</th><th>Place of Purchase</th><th>Value</th><th>Notes</th><th>Date Issued</th><th>Status</th></tr></thead>
+                  <tbody>${itemRows}</tbody>
+                </table>
+              </div>`;
+          });
+          const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>${reportTitle}</title>
+            <style>
+              body{font-family:Arial,sans-serif;font-size:11px;padding:20px;color:#222;}
+              h2{font-size:15px;margin-bottom:2px;color:#1e3040;}
+              .sub{font-size:10px;color:#888;margin-bottom:14px;}
+              .member-section{margin-bottom:24px;page-break-inside:avoid;}
+              .member-header{font-size:12px;font-weight:700;background:#1e3040;color:#fff;padding:6px 10px;border-radius:4px 4px 0 0;margin-bottom:0;}
+              table{width:100%;border-collapse:collapse;}
+              th{background:#4A7FA5;color:#fff;padding:6px 8px;text-align:left;font-size:9px;text-transform:uppercase;letter-spacing:.05em;}
+              td{padding:5px 8px;border-bottom:1px solid #eee;font-size:10px;word-break:break-word;}
+              tr:nth-child(even) td{background:#f5f8fb;}
+              @media print{body{padding:0;}}
+            </style>
+          </head><body>
+            <h2>${reportTitle}</h2>
+            <div class="sub">Generated: ${new Date().toLocaleString()} &bull; ${allItems.length} records &bull; ${Object.keys(groups).length} members</div>
+            ${sections}
+            <script>setTimeout(()=>window.print(),600);<\/script>
+          </body></html>`;
+          const w = window.open("","_blank");
+          if (w) { w.document.write(html); w.document.close(); }
+          else showToast("Allow popups to generate PDF.");
+          return;
+
+        } else {
+          // Excel: member header row then item rows per group
+          if (!window.JSZip) {
+            await new Promise((res,rej)=>{ const s=document.createElement("script"); s.src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"; s.onload=res; s.onerror=rej; document.head.appendChild(s); });
+          }
+          const exHeaders = ["Item","Manufacturer","Place of Purchase","Replacement Value","Notes","Date Issued","Status"];
+          const exRows = [];
+          Object.values(groups).forEach(g => {
+            const label = g.unit ? g.unit + " — " + g.name : g.name;
+            exRows.push(["▶ " + label, "", "", "", "", "", ""]);
+            g.items.forEach(i => {
+              const issued = i.dateIssued?.toDate ? i.dateIssued.toDate().toLocaleDateString() : "";
+              const status = i.status === "storage" ? "In Storage" : "Issued Out";
+              exRows.push([i.itemName||"", i.manufacturer||"", i.placeOfPurchase||"",
+                i.replacementValue?"$"+parseFloat(i.replacementValue).toFixed(2):"", i.notes||"", issued, status]);
+            });
+            exRows.push(["","","","","","",""]);
+          });
+          buildAndDownloadXlsx(exHeaders, exRows, "COMC-Issued-Equipment");
+          return;
+        }
       } else if (type === "log") {
         title = "COMC Activity Log — " + new Date().toLocaleDateString();
         headers = ["Date/Time","Action","Equipment","Call #","Location","Member","Items/Notes","By"];
@@ -2019,7 +2122,8 @@
       } else buildAndDownloadXlsx(headers,rows);
     };
 
-    function buildAndDownloadXlsx(headers,rows) {
+    function buildAndDownloadXlsx(headers, rows, filename) {
+      filename = filename || "COMC-Report";
       const allStrings=[]; const strIdx={};
       function si(v){ const s=String(v??""); if(strIdx[s]===undefined){strIdx[s]=allStrings.length;allStrings.push(s);} return strIdx[s]; }
       let sheetXml="";
@@ -2041,7 +2145,7 @@
       zip.file("xl/worksheets/sheet1.xml",wsXml); zip.file("xl/sharedStrings.xml",ssXml);
       zip.generateAsync({type:"blob",mimeType:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}).then(blob=>{
         const a=document.createElement("a"); a.href=URL.createObjectURL(blob);
-        a.download="COMC-Log-"+new Date().toISOString().slice(0,10)+".xlsx"; a.click();
+        a.download = filename + "-" + new Date().toISOString().slice(0,10) + ".xlsx"; a.click();
         showToast("Log exported!");
       });
     }
@@ -3137,7 +3241,7 @@
       </div>
       <div class="form-group">
         <label>Specific Unit ID</label>
-        <select id="co-id-select" disabled>
+        <select id="co-id-select" disabled onchange="onIdSelect()">
           <option value="">— Select type first —</option>
         </select>
       </div>
@@ -3227,11 +3331,11 @@
       <div class="report-group-title">Inventory</div>
       <div class="report-row">
         <button class="report-btn report-pdf" onclick="generateReport('inventory','pdf')">
-          <div class="report-icon">📄</div>
+          
           <div class="report-label">Inventory Report<span>PDF</span></div>
         </button>
         <button class="report-btn report-excel" onclick="generateReport('inventory','excel')">
-          <div class="report-icon">📊</div>
+          
           <div class="report-label">Inventory Report<span>Excel</span></div>
         </button>
       </div>
@@ -3241,11 +3345,11 @@
       <div class="report-group-title">Activity Log</div>
       <div class="report-row">
         <button class="report-btn report-pdf" onclick="generateReport('log','pdf')">
-          <div class="report-icon">📄</div>
+          
           <div class="report-label">Activity Log<span>PDF</span></div>
         </button>
         <button class="report-btn report-excel" onclick="generateReport('log','excel')">
-          <div class="report-icon">📊</div>
+          
           <div class="report-label">Activity Log<span>Excel</span></div>
         </button>
       </div>
@@ -3255,11 +3359,11 @@
       <div class="report-group-title">Call Log</div>
       <div class="report-row">
         <button class="report-btn report-pdf" onclick="generateReport('calls','pdf')">
-          <div class="report-icon">📄</div>
+          
           <div class="report-label">Call Log<span>PDF</span></div>
         </button>
         <button class="report-btn report-excel" onclick="generateReport('calls','excel')">
-          <div class="report-icon">📊</div>
+          
           <div class="report-label">Call Log<span>Excel</span></div>
         </button>
       </div>
@@ -3269,11 +3373,11 @@
       <div class="report-group-title">Missing Equipment</div>
       <div class="report-row">
         <button class="report-btn report-pdf" onclick="generateReport('missing','pdf')">
-          <div class="report-icon">📄</div>
+          
           <div class="report-label">Missing Equipment<span>PDF</span></div>
         </button>
         <button class="report-btn report-excel" onclick="generateReport('missing','excel')">
-          <div class="report-icon">📊</div>
+          
           <div class="report-label">Missing Equipment<span>Excel</span></div>
         </button>
       </div>
@@ -3283,11 +3387,11 @@
       <div class="report-group-title">Broken Equipment</div>
       <div class="report-row">
         <button class="report-btn report-pdf" onclick="generateReport('broken','pdf')">
-          <div class="report-icon">📄</div>
+          
           <div class="report-label">Broken Equipment<span>PDF</span></div>
         </button>
         <button class="report-btn report-excel" onclick="generateReport('broken','excel')">
-          <div class="report-icon">📊</div>
+          
           <div class="report-label">Broken Equipment<span>Excel</span></div>
         </button>
       </div>
@@ -3297,12 +3401,26 @@
       <div class="report-group-title">Open Calls</div>
       <div class="report-row">
         <button class="report-btn report-pdf" onclick="generateReport('open-calls','pdf')">
-          <div class="report-icon">📄</div>
+          
           <div class="report-label">Open Calls<span>PDF</span></div>
         </button>
         <button class="report-btn report-excel" onclick="generateReport('open-calls','excel')">
-          <div class="report-icon">📊</div>
+          
           <div class="report-label">Open Calls<span>Excel</span></div>
+        </button>
+      </div>
+    </div>
+
+    <div class="report-group">
+      <div class="report-group-title">Issued Equipment</div>
+      <div class="report-row">
+        <button class="report-btn report-pdf" onclick="generateReport('issued','pdf')">
+          
+          <div class="report-label">Issued Equipment<span>PDF</span></div>
+        </button>
+        <button class="report-btn report-excel" onclick="generateReport('issued','excel')">
+          
+          <div class="report-label">Issued Equipment<span>Excel</span></div>
         </button>
       </div>
     </div>
