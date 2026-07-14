@@ -159,12 +159,12 @@
       document.getElementById("view-login").style.display = "none";
       document.getElementById("view-app").style.display   = "block";
       document.getElementById("user-name").textContent = currentUser.displayName || currentUser.email;
-      const isDispatcherUser = /^MC[AD]-/i.test(currentUserUnit||"");
+      const isDispatcherUser = currentRole === "dispatcher";
       document.getElementById("user-role").textContent = currentRole==="admin" ? "Admin" : isDispatcherUser ? "Dispatcher" : "Member";
       document.querySelectorAll(".admin-only").forEach(el => el.style.display = currentRole==="admin" ? "" : "none");
-      document.querySelectorAll(".member-only").forEach(el => el.style.display = currentRole==="member" ? "" : "none");
-      // Show inventory tab to dispatchers even though it's admin-only (summary only)
-      if (isDispatcherUser && currentRole !== "admin") {
+      document.querySelectorAll(".member-only").forEach(el => el.style.display = (currentRole==="member"||currentRole==="dispatcher") ? "" : "none");
+      // Show inventory tab to dispatchers
+      if (currentRole === "dispatcher") {
         document.querySelectorAll(".dispatcher-visible").forEach(el => el.style.display = "");
       }
       const memberField = document.getElementById("co-member");
@@ -290,8 +290,8 @@
       }
 
       // Dispatchers see summary only, not individual equipment cards
-      const isDispatcherUser = /^MC[AD]-/i.test(currentUserUnit||"");
-      if (isDispatcherUser && currentRole !== "admin") return;
+      const isDispatcherUser = currentRole === "dispatcher";
+      if (isDispatcherUser) return;
 
       // Group by prefix for display
       const groups = {};
@@ -2225,8 +2225,7 @@
       const unit=document.getElementById("u-unit").value.trim();
       const email=document.getElementById("u-email").value.trim();
       const roleVal=document.getElementById("u-role").value;
-      // Dispatcher maps to member role in Firestore (identified by unit prefix)
-      const role = roleVal === "admin" ? "admin" : "member";
+      const role = roleVal; // save role directly: member, dispatcher, or admin
       const err=document.getElementById("u-error"); err.textContent="";
       if (!name||!unit||!email){err.textContent="All fields required.";return;}
       const allUsers=await getDocs(collection(db,"users"));
@@ -2258,9 +2257,9 @@
         <div class="form-group"><label>Email</label><input id="u-email" type="email" value="${d.email||''}"></div>
         <div class="form-group"><label>Role</label>
           <select id="u-role">
-            <option value="member" ${d.role==="member"?"selected":""}>Responder</option>
-            <option value="member" ${d.role==="member"?"selected":""}>Dispatcher</option>
-            <option value="admin"  ${d.role==="admin" ?"selected":""}>Coordinator</option>
+            <option value="member"     ${d.role==="member"    ?"selected":""}>Responder</option>
+            <option value="dispatcher" ${d.role==="dispatcher"?"selected":""}>Dispatcher</option>
+            <option value="admin"      ${d.role==="admin"     ?"selected":""}>Coordinator</option>
           </select></div>
         <div id="u-error" style="color:var(--red);font-size:.82rem;min-height:18px;margin-top:4px"></div>
         <button class="delete-btn" onclick="removeUser('${uid}','${d.displayName||''}')">&#128465; Remove User</button>
@@ -2361,8 +2360,13 @@
 
         // Role mapping:
         // Coordinator → admin
-        // Active / ActiveDispatch / Dispatcher → member
-        const getRole = s => s === "coordinator" ? "admin" : "member";
+        // ActiveDispatch / Dispatcher → dispatcher
+        // Active → member
+        const getRole = s => {
+          if (s === "coordinator") return "admin";
+          if (s === "activedispatch" || s === "dispatcher") return "dispatcher";
+          return "member";
+        };
 
         if (!confirm(`Import ${rows.length} users?\n• Coordinators → Admin\n• Active/Dispatcher → Member\n• Inactive → Skipped\n\nExisting users with matching email will be updated.`)) {
           input.value=""; status.style.display="none"; return;
@@ -2453,9 +2457,7 @@
     };
 
     function isDispatcher(u) {
-      // Dispatchers have unit numbers starting with MCD- or MCA- prefix
-      const unit = (u.unitNumber||"").toUpperCase();
-      return unit.startsWith("MCD-") || unit.startsWith("MCA-");
+      return u.role === "dispatcher";
     }
 
     function unitSortKey(unitStr) {
@@ -3319,7 +3321,7 @@
   <!-- INVENTORY -->
   <div id="tab-inventory" class="tab-content">
     <div class="toolbar">
-      <input type="text" id="inv-search" placeholder="&#128269; Search..." oninput="filterInventory()">
+      <input type="text" id="inv-search" placeholder="&#128269; Search..." oninput="filterInventory()" class="admin-only">
       <button class="tbtn tbtn-primary admin-only" onclick="showAddEquipment()">+ Add</button>
       <button class="tbtn tbtn-muted   admin-only" onclick="showBulkAdd()">+ Bulk</button>
     </div>
