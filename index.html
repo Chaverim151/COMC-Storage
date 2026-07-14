@@ -159,9 +159,14 @@
       document.getElementById("view-login").style.display = "none";
       document.getElementById("view-app").style.display   = "block";
       document.getElementById("user-name").textContent = currentUser.displayName || currentUser.email;
-      document.getElementById("user-role").textContent = currentRole==="admin" ? "Admin" : "Member";
+      const isDispatcherUser = /^MC[AD]-/i.test(currentUserUnit||"");
+      document.getElementById("user-role").textContent = currentRole==="admin" ? "Admin" : isDispatcherUser ? "Dispatcher" : "Member";
       document.querySelectorAll(".admin-only").forEach(el => el.style.display = currentRole==="admin" ? "" : "none");
       document.querySelectorAll(".member-only").forEach(el => el.style.display = currentRole==="member" ? "" : "none");
+      // Show inventory tab to dispatchers even though it's admin-only (summary only)
+      if (isDispatcherUser && currentRole !== "admin") {
+        document.querySelectorAll(".dispatcher-visible").forEach(el => el.style.display = "");
+      }
       const memberField = document.getElementById("co-member");
       if (memberField) memberField.value = currentUser.displayName || "";
       loadEquipment();
@@ -283,6 +288,10 @@
         `;
         container.appendChild(summaryCard);
       }
+
+      // Dispatchers see summary only, not individual equipment cards
+      const isDispatcherUser = /^MC[AD]-/i.test(currentUserUnit||"");
+      if (isDispatcherUser && currentRole !== "admin") return;
 
       // Group by prefix for display
       const groups = {};
@@ -554,7 +563,7 @@
           </div>
           <div class="call-meta-row">
             ${call.location   ? `<span>&#128205; ${call.location}</span>` : ""}
-            ${call.memberName ? `<span>&#128100; ${call.memberName}${call.memberUnit?" (MC-"+call.memberUnit+")":""}</span>` : ""}
+            ${call.memberName ? `<span>&#128100; ${call.memberName}${call.memberUnit?" ("+call.memberUnit+")":""}</span>` : ""}
             ${call.callerPhone ? `<span>&#128222; ${call.callerPhone}</span>` : ""}
             ${call.reminderSent && currentRole==="admin" ? `<span style="color:var(--green)">&#10003; Reminder sent${call.reminderSentAt?.toDate ? " " + call.reminderSentAt.toDate().toLocaleString("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}) : ""}</span>` : ""}
           </div>
@@ -591,7 +600,10 @@
 
         const footer = document.createElement("div");
         footer.style.marginTop = "8px";
-        footer.innerHTML = `<div class="call-footer-meta">${call.openedBy||""} &bull; ${time}</div>`;
+        footer.innerHTML = `
+          ${call.notes ? `<div class="call-notes">&#128203; ${call.notes}</div>` : ""}
+          <div class="call-footer-meta">${call.openedBy||""} &bull; ${time}</div>
+        `;
         card.appendChild(footer);
 
         // Buttons
@@ -968,7 +980,7 @@
           </div>
           <div class="call-meta-row">
             ${call.location   ? `<span>&#128205; ${call.location}</span>` : ""}
-            ${call.memberName ? `<span>&#128100; ${call.memberName}${call.memberUnit?" (MC-"+call.memberUnit+")":""}</span>` : ""}
+            ${call.memberName ? `<span>&#128100; ${call.memberName}${call.memberUnit?" ("+call.memberUnit+")":""}</span>` : ""}
           </div>
           <div class="call-items-wrap">
             <div class="call-items-label">Equipment out:</div>
@@ -1760,7 +1772,7 @@
               </div>
             </div>
             <div class="call-meta-row">
-              ${call.memberName ? `<span>&#128100; ${call.memberName}${call.memberUnit?" (MC-"+call.memberUnit+")":""}</span>` : ""}
+              ${call.memberName ? `<span>&#128100; ${call.memberName}${call.memberUnit?" ("+call.memberUnit+")":""}</span>` : ""}
               ${call.location   ? `<span>&#128205; ${call.location}</span>` : ""}
               <span>&#128336; ${time}</span>
             </div>
@@ -2937,6 +2949,7 @@
     .sum-missing   {font-size:.72rem;color:var(--orange);font-weight:700;background:rgba(232,112,64,.15);padding:3px 8px;border-radius:20px;}
     .btn-missing   {background:rgba(232,112,64,.15);color:var(--orange);}
     .broken-note{font-size:.78rem;color:var(--red);margin-bottom:8px;}
+    .call-notes{font-size:.78rem;color:var(--muted);margin:4px 0 6px;padding:6px 10px;background:var(--surface2);border-radius:6px;border-left:3px solid var(--border);}
     .kit-contents{font-size:.78rem;color:var(--text);background:var(--surface2);border-radius:6px;padding:8px 10px;margin:6px 0;line-height:1.5;}
     .kit-contents strong{color:var(--sky);display:block;margin-bottom:4px;}
     .kit-comp-row{display:flex;align-items:center;gap:8px;padding:3px 0;font-size:.78rem;}
@@ -3209,7 +3222,7 @@
   <div class="tabs">
     <div class="tab active" data-tab="checkout"  onclick="switchTab('checkout',this)">&#128229; Check Out</div>
     <div class="tab"        data-tab="checkin"   onclick="switchTab('checkin',this)">&#128228; Check In</div>
-    <div class="tab admin-only" data-tab="inventory" onclick="switchTab('inventory',this)">&#128230; Inventory</div>
+    <div class="tab admin-only dispatcher-visible" data-tab="inventory" onclick="switchTab('inventory',this)">&#128230; Inventory</div>
     <div class="tab"            data-tab="mycalls"   onclick="switchTab('mycalls',this)">&#128203; Call Log</div>
     <div class="tab admin-only" data-tab="log"      onclick="switchTab('log',this)">&#128203; Activity Log</div>
     <div class="tab admin-only" data-tab="reports"  onclick="switchTab('reports',this)">&#128196; Reports</div>
