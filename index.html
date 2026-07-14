@@ -2201,13 +2201,14 @@
       document.getElementById("modal-body").innerHTML = `
         <div class="form-group"><label>Display Name</label><input id="u-name" type="text" placeholder="Full name"></div>
         <div class="form-group"><label>Unit Number</label>
-          <div style="display:flex;align-items:center;gap:8px">
-            <span style="color:var(--sky);font-family:'Barlow Condensed',sans-serif;font-weight:700;flex-shrink:0">MC-</span>
-            <input id="u-unit" type="text" placeholder="e.g. 412 or D1" style="flex:1">
-          </div></div>
+          <input id="u-unit" type="text" placeholder="e.g. MC-412, MCD-3, MCA-1"></div>
         <div class="form-group"><label>Email (for password reset)</label><input id="u-email" type="email" placeholder="user@example.com"></div>
         <div class="form-group"><label>Role</label>
-          <select id="u-role"><option value="member">Member</option><option value="admin">Admin</option></select></div>
+          <select id="u-role">
+            <option value="member">Responder</option>
+            <option value="dispatcher">Dispatcher</option>
+            <option value="admin">Coordinator</option>
+          </select></div>
         <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;font-size:.82rem;color:var(--muted);margin-top:4px;line-height:1.5">
           &#128274; Temp password <strong style="color:var(--sky)">Chaverim1!</strong> will be set. Member uses Forgot Password to set their own.
         </div>
@@ -2221,22 +2222,25 @@
 
     async function confirmAddUser() {
       const name=document.getElementById("u-name").value.trim();
-      const unit=document.getElementById("u-unit").value.trim().replace(/^MC-?/i,"");
+      const unit=document.getElementById("u-unit").value.trim();
       const email=document.getElementById("u-email").value.trim();
-      const role=document.getElementById("u-role").value;
+      const roleVal=document.getElementById("u-role").value;
+      // Dispatcher maps to member role in Firestore (identified by unit prefix)
+      const role = roleVal === "admin" ? "admin" : "member";
       const err=document.getElementById("u-error"); err.textContent="";
       if (!name||!unit||!email){err.textContent="All fields required.";return;}
       const allUsers=await getDocs(collection(db,"users"));
-      let taken=false; allUsers.forEach(d=>{if(d.data().unitNumber===unit)taken=true;});
-      if(taken){err.textContent="MC-"+unit+" already in use.";return;}
+      const stripPfx = u => (u||"").replace(/^MC[A-Z]?-?/i,"").toLowerCase();
+      let taken=false; allUsers.forEach(d=>{if(stripPfx(d.data().unitNumber)===stripPfx(unit))taken=true;});
+      if(taken){err.textContent=unit+" already in use.";return;}
       try {
         const cred=await createUserWithEmailAndPassword(secondaryAuth,email,"Chaverim1!");
         await updateProfile(cred.user,{displayName:name});
         await setDoc(doc(db,"users",cred.user.uid),{displayName:name,unitNumber:unit,email,role,createdAt:serverTimestamp(),createdBy:currentUser.displayName||currentUser.email});
         await sendPasswordResetEmail(secondaryAuth,email);
         await signOut(secondaryAuth);
-        await addLog({action:"USER_ADDED",equipmentName:name+" (MC-"+unit+") as "+role,userId:currentUser.uid,userName:currentUser.displayName||currentUser.email});
-        closeModal(); window.loadUsers(); showToast("MC-"+unit+" created! Reset email sent.");
+        await addLog({action:"USER_ADDED",equipmentName:name+" ("+unit+") as "+roleVal,userId:currentUser.uid,userName:currentUser.displayName||currentUser.email});
+        closeModal(); window.loadUsers(); showToast(unit+" created! Reset email sent.");
       } catch(e) {
         if(e.code==="auth/email-already-in-use")err.textContent="Email already in use.";
         else err.textContent="Error: "+e.message;
@@ -2250,13 +2254,14 @@
       document.getElementById("modal-body").innerHTML=`
         <div class="form-group"><label>Display Name</label><input id="u-name" type="text" value="${d.displayName||''}"></div>
         <div class="form-group"><label>Unit Number</label>
-          <div style="display:flex;align-items:center;gap:8px">
-            <span style="color:var(--sky);font-family:'Barlow Condensed',sans-serif;font-weight:700;flex-shrink:0">MC-</span>
-            <input id="u-unit" type="text" value="${d.unitNumber||''}" style="flex:1">
-          </div></div>
+          <input id="u-unit" type="text" value="${d.unitNumber||''}" placeholder="e.g. MC-412, MCD-3, MCA-1"></div>
         <div class="form-group"><label>Email</label><input id="u-email" type="email" value="${d.email||''}"></div>
         <div class="form-group"><label>Role</label>
-          <select id="u-role"><option value="member" ${d.role==="member"?"selected":""}>Member</option><option value="admin" ${d.role==="admin"?"selected":""}>Admin</option></select></div>
+          <select id="u-role">
+            <option value="member" ${d.role==="member"?"selected":""}>Responder</option>
+            <option value="member" ${d.role==="member"?"selected":""}>Dispatcher</option>
+            <option value="admin"  ${d.role==="admin" ?"selected":""}>Coordinator</option>
+          </select></div>
         <div id="u-error" style="color:var(--red);font-size:.82rem;min-height:18px;margin-top:4px"></div>
         <button class="delete-btn" onclick="removeUser('${uid}','${d.displayName||''}')">&#128465; Remove User</button>
       `;
@@ -2268,7 +2273,7 @@
 
     async function confirmEditUser(uid) {
       const name=document.getElementById("u-name").value.trim();
-      const unit=document.getElementById("u-unit").value.trim().replace(/^MC-?/i,"");
+      const unit=document.getElementById("u-unit").value.trim();
       const email=document.getElementById("u-email").value.trim();
       const role=document.getElementById("u-role").value;
       if(!name||!unit){alert("Name and unit required.");return;}
