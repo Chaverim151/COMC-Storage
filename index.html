@@ -682,27 +682,42 @@
       const item = (call.items||[]).find(i=>i.firestoreId===firestoreId);
       console.log("item found:", item);
       if (!item) { alert("Item not found in call. Try refreshing."); return; }
-      if (!confirm("Return "+eqId+" — "+item.name+" from Call #"+call.callNumber+"?")) return;
 
-      try {
-        const remaining = (call.items||[]).filter(i=>i.firestoreId!==firestoreId);
-        console.log("remaining items:", remaining.length);
-        const batch = writeBatch(db);
-        batch.update(doc(db,"equipment",firestoreId), { status: "available" });
-        if (remaining.length===0) {
-          batch.update(doc(db,"calls",callId), { status:"closed", closedAt:serverTimestamp(), closedBy: currentUser.displayName||currentUser.email });
-        } else {
-          batch.update(doc(db,"calls",callId), { items: remaining });
+      // Show return notes modal
+      const modal = document.getElementById("modal");
+      document.getElementById("modal-title").textContent = "Return " + eqId;
+      document.getElementById("modal-body").innerHTML = `
+        <div style="font-size:.85rem;color:var(--muted);margin-bottom:12px;">Returning <strong style="color:var(--text)">${item.name} (${eqId})</strong> from Call #${call.callNumber}</div>
+        <div class="form-group"><label>Return Notes (optional)</label>
+          <textarea id="return-notes" rows="3" placeholder="e.g. Item returned in good condition, missing remote, etc." style="width:100%;resize:vertical;font-family:'Barlow',sans-serif;font-size:.88rem;padding:10px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:7px;color:var(--text);"></textarea>
+        </div>
+      `;
+      document.getElementById("modal-confirm").textContent = "Confirm Return";
+      document.getElementById("modal-confirm").style.display = "";
+      document.getElementById("modal-confirm").onclick = async function() {
+        const returnNotes = document.getElementById("return-notes")?.value.trim() || "";
+        closeModal();
+        try {
+          const remaining = (call.items||[]).filter(i=>i.firestoreId!==firestoreId);
+          console.log("remaining items:", remaining.length);
+          const batch = writeBatch(db);
+          batch.update(doc(db,"equipment",firestoreId), { status: "available" });
+          if (remaining.length===0) {
+            batch.update(doc(db,"calls",callId), { status:"closed", closedAt:serverTimestamp(), closedBy: currentUser.displayName||currentUser.email, returnNotes: returnNotes || null });
+          } else {
+            batch.update(doc(db,"calls",callId), { items: remaining });
+          }
+          await batch.commit();
+          console.log("batch committed successfully");
+          await addLog({ action:"CHECK_IN", callNumber:call.callNumber, equipmentName:item.name+" ("+eqId+")"+(returnNotes?" — "+returnNotes:""),
+            userId:currentUser.uid, userName:currentUser.displayName||currentUser.email });
+          showToast(eqId+" returned!");
+        } catch(e) {
+          console.error("Error returning item:", e);
+          alert("Error: " + e.message);
         }
-        await batch.commit();
-        console.log("batch committed successfully");
-        await addLog({ action:"CHECK_IN", callNumber:call.callNumber, equipmentName:item.name+" ("+eqId+")",
-          userId:currentUser.uid, userName:currentUser.displayName||currentUser.email });
-        showToast(eqId+" returned!");
-      } catch(e) {
-        console.error("Error returning item:", e);
-        alert("Error: " + e.message);
-      }
+      };
+      modal.style.display = "flex";
     };
 
     window.editCall = async function(callId) {
@@ -944,21 +959,36 @@
       const call = activeCallsMap[callId];
       console.log("call found:", call);
       if (!call) { alert("Call not found. Try refreshing."); return; }
-      if (!confirm("Close Call #"+call.callNumber+" and return all equipment?")) return;
-      try {
-        const batch = writeBatch(db);
-        (call.items||[]).forEach(i => batch.update(doc(db,"equipment",i.firestoreId), { status:"available" }));
-        batch.update(doc(db,"calls",callId), { status:"closed", closedAt:serverTimestamp(), closedBy:currentUser.displayName||currentUser.email });
-        await batch.commit();
-        console.log("closeCall batch committed");
-        await addLog({ action:"CALL_CLOSED", callNumber:call.callNumber,
-          items:(call.items||[]).map(i=>i.eqId).join(", "),
-          userId:currentUser.uid, userName:currentUser.displayName||currentUser.email });
-        showToast("Call #"+call.callNumber+" closed.");
-      } catch(e) {
-        console.error("Error closing call:", e);
-        alert("Error: " + e.message);
-      }
+
+      const modal = document.getElementById("modal");
+      document.getElementById("modal-title").textContent = "Return All & Close Call";
+      document.getElementById("modal-body").innerHTML = `
+        <div style="font-size:.85rem;color:var(--muted);margin-bottom:12px;">Returning all equipment from <strong style="color:var(--text)">Call #${call.callNumber}</strong> and closing the call.</div>
+        <div class="form-group"><label>Return Notes (optional)</label>
+          <textarea id="return-notes" rows="3" placeholder="e.g. All items returned in good condition, minor cleaning needed, etc." style="width:100%;resize:vertical;font-family:'Barlow',sans-serif;font-size:.88rem;padding:10px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:7px;color:var(--text);"></textarea>
+        </div>
+      `;
+      document.getElementById("modal-confirm").textContent = "Confirm Close";
+      document.getElementById("modal-confirm").style.display = "";
+      document.getElementById("modal-confirm").onclick = async function() {
+        const returnNotes = document.getElementById("return-notes")?.value.trim() || "";
+        closeModal();
+        try {
+          const batch = writeBatch(db);
+          (call.items||[]).forEach(i => batch.update(doc(db,"equipment",i.firestoreId), { status:"available" }));
+          batch.update(doc(db,"calls",callId), { status:"closed", closedAt:serverTimestamp(), closedBy:currentUser.displayName||currentUser.email, returnNotes: returnNotes || null });
+          await batch.commit();
+          console.log("closeCall batch committed");
+          await addLog({ action:"CALL_CLOSED", callNumber:call.callNumber,
+            items:(call.items||[]).map(i=>i.eqId).join(", ")+(returnNotes?" — "+returnNotes:""),
+            userId:currentUser.uid, userName:currentUser.displayName||currentUser.email });
+          showToast("Call #"+call.callNumber+" closed.");
+        } catch(e) {
+          console.error("Error closing call:", e);
+          alert("Error: " + e.message);
+        }
+      };
+      modal.style.display = "flex";
     };
 
     // ── IN USE TAB ───────────────────────────────────────────────
@@ -1785,6 +1815,8 @@
               `).join("")}
             </div>
             ${call.notes ? `<div class="call-notes">&#128203; ${call.notes}</div>` : ""}
+            ${call.returnNotes ? `<div class="call-notes" style="border-left-color:var(--green);color:var(--green);">&#10003; Return notes: ${call.returnNotes}</div>` : ""}
+            ${!isOpen && call.closedAt?.toDate ? `<div style="font-size:.72rem;color:var(--muted);margin-top:4px;">Closed: ${call.closedAt.toDate().toLocaleString()} ${call.closedBy?"by "+call.closedBy:""}</div>` : ""}
           `;
           return card;
         }
