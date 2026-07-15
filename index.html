@@ -2689,11 +2689,9 @@
     window.showMergeSuggestions = async function() {
       const modal = document.getElementById("modal");
       document.getElementById("modal-title").textContent = "Suggested Merges";
-      document.getElementById("modal-body").innerHTML = `<div style="color:var(--muted);font-size:.88rem;padding:16px 0;">&#8987; Analyzing items for duplicates...</div>`;
       document.getElementById("modal-confirm").style.display = "none";
       modal.style.display = "flex";
 
-      // Gather unique item names from all issued gear
       const allItems = window._allIssuedGear.filter(i => i.itemName);
       const uniqueNames = [...new Set(allItems.map(i => i.itemName.trim()))];
 
@@ -2702,58 +2700,59 @@
         return;
       }
 
-      try {
-        const resp = await fetch("https://api.anthropic.com/v1/messages", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            model: "claude-sonnet-4-6",
-            max_tokens: 1000,
-            messages: [{
-              role: "user",
-              content: `You are helping deduplicate an equipment inventory. Below is a list of item names. Group items that refer to the same type of product (e.g. "Black Jack Tire Plug Kit" and "Black Jack KT-340 Tire Repair Kit" are the same product). Only suggest groups where there are 2+ similar items. Return ONLY valid JSON — an array of groups, each with "canonical" (the best unified name to use) and "items" (array of the original names). Example: [{"canonical":"Black Jack Tire Repair Kit","items":["Black Jack Tire Plug Kit","Black Jack KT-340 Tire Repair Kit"]}]. If no duplicates found, return [].
-
-Items:
-${uniqueNames.map((n,i)=>`${i+1}. ${n}`).join("\n")}`
-            }]
-          })
-        });
-        const data = await resp.json();
-        const raw = (data.content||[]).find(b=>b.type==="text")?.text || "[]";
-        let groups = [];
-        try { groups = JSON.parse(raw.replace(/```json|```/g,"").trim()); } catch(e) { groups = []; }
-
-        if (!groups.length) {
-          document.getElementById("modal-body").innerHTML = `<div class="empty" style="padding:16px 0;">&#10003; No obvious duplicates found.</div>`;
-          return;
-        }
-
-        window._mergeGroups = groups.map(g => ({
-          canonical: g.canonical,
-          ids: allItems.filter(i => g.items.includes(i.itemName)).map(i => i.id),
-          items: g.items
-        }));
-
-        let html = `<div style="font-size:.78rem;color:var(--muted);margin-bottom:14px;">Found ${groups.length} potential merge group${groups.length!==1?"s":""}. Click Apply to rename all matching items to the canonical name.</div>`;
-        window._mergeGroups.forEach((g, gi) => {
-          html += `
-            <div style="border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:10px;">
-              <div style="font-size:.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px;">Merge group ${gi+1} &bull; ${g.ids.length} record${g.ids.length!==1?"s":""}</div>
-              <div style="font-size:.88rem;color:var(--text);margin-bottom:8px;">
-                ${g.items.map(n=>`<span style="background:var(--surface2);border-radius:4px;padding:2px 7px;margin:2px;display:inline-block;font-size:.78rem;">${n}</span>`).join(" ")}
-              </div>
-              <div style="display:flex;gap:8px;align-items:center;">
-                <span style="font-size:.72rem;color:var(--sky);">&#8594; Rename all to:</span>
-                <input id="merge-canonical-${gi}" value="${g.canonical}" style="flex:1;padding:6px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:.82rem;">
-                <button class="user-btn" onclick="applyMerge(${gi})">Apply</button>
-              </div>
-            </div>`;
-        });
-
-        document.getElementById("modal-body").innerHTML = html;
-      } catch(e) {
-        document.getElementById("modal-body").innerHTML = `<div class="empty" style="color:var(--red)">Error: ${e.message}</div>`;
+      // Simple similarity: normalize names and group by common words
+      function normalize(s) { return s.toLowerCase().replace(/[^a-z0-9 ]/g," ").replace(/\s+/g," ").trim(); }
+      function similarity(a, b) {
+        const wa = new Set(normalize(a).split(" ").filter(w=>w.length>2));
+        const wb = new Set(normalize(b).split(" ").filter(w=>w.length>2));
+        const inter = [...wa].filter(w=>wb.has(w)).length;
+        const union = new Set([...wa,...wb]).size;
+        return union ? inter/union : 0;
       }
+
+      // Group names with >50% word overlap
+      const used = new Set();
+      const groups = [];
+      for (let i=0; i<uniqueNames.length; i++) {
+        if (used.has(i)) continue;
+        const group = [uniqueNames[i]];
+        used.add(i);
+        for (let j=i+1; j<uniqueNames.length; j++) {
+          if (!used.has(j) && similarity(uniqueNames[i], uniqueNames[j]) >= 0.5) {
+            group.push(uniqueNames[j]);
+            used.add(j);
+          }
+        }
+        if (group.length > 1) groups.push(group);
+      }
+
+      if (!groups.length) {
+        document.getElementById("modal-body").innerHTML = `<div class="empty">&#10003; No obvious duplicates found.</div>`;
+        return;
+      }
+
+      window._mergeGroups = groups.map(g => {
+        // Pick longest name as canonical
+        const canonical = g.slice().sort((a,b)=>b.length-a.length)[0];
+        return { canonical, items: g, ids: allItems.filter(i=>g.includes(i.itemName)).map(i=>i.id) };
+      });
+
+      let html = `<div style="font-size:.78rem;color:var(--muted);margin-bottom:14px;">Found ${groups.length} potential merge group${groups.length!==1?"s":""}. Edit the canonical name then click Apply.</div>`;
+      window._mergeGroups.forEach((g, gi) => {
+        html += `
+          <div style="border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:10px;">
+            <div style="font-size:.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px;">Group ${gi+1} &bull; ${g.ids.length} record${g.ids.length!==1?"s":""}</div>
+            <div style="margin-bottom:8px;">
+              ${g.items.map(n=>`<span style="background:var(--surface2);border-radius:4px;padding:2px 7px;margin:2px;display:inline-block;font-size:.78rem;">${n}</span>`).join(" ")}
+            </div>
+            <div style="display:flex;gap:8px;align-items:center;">
+              <span style="font-size:.72rem;color:var(--sky);">&#8594;</span>
+              <input id="merge-canonical-${gi}" value="${g.canonical.replace(/"/g,'&quot;')}" style="flex:1;padding:6px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:.82rem;">
+              <button class="user-btn" onclick="applyMerge(${gi})">Apply</button>
+            </div>
+          </div>`;
+      });
+      document.getElementById("modal-body").innerHTML = html;
     };
 
     window.applyMerge = async function(gi) {
