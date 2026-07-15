@@ -2545,7 +2545,36 @@
       );
 
       c.innerHTML = "";
-      if (!items.length) { c.innerHTML = '<div class="empty">No issued equipment found.</div>'; return; }
+
+      // Storage summary card
+      if (f === "storage" && !q) {
+        const storageAll = window._allIssuedGear.filter(i => i.status === "storage");
+        if (storageAll.length) {
+          // Group by item name for summary
+          const counts = {};
+          let totalValue = 0;
+          storageAll.forEach(i => {
+            const key = i.itemName || "Unknown";
+            counts[key] = (counts[key] || 0) + 1;
+            totalValue += parseFloat(i.replacementValue) || 0;
+          });
+          const summaryCard = document.createElement("div");
+          summaryCard.className = "summary-card";
+          summaryCard.style.marginBottom = "16px";
+          summaryCard.innerHTML = `
+            <div class="summary-title">&#128230; In Storage — ${storageAll.length} item${storageAll.length!==1?"s":""} &nbsp;<span style="font-size:.78rem;color:var(--sky);font-weight:400;">Total value: $${totalValue.toFixed(2)}</span></div>
+            <div class="summary-grid">
+              ${Object.entries(counts).sort((a,b)=>b[1]-a[1]).map(([name,count])=>`
+                <div class="summary-row">
+                  <span class="sum-name">${name}</span>
+                  <span class="sum-pill sum-avail">${count}</span>
+                </div>`).join("")}
+            </div>`;
+          c.appendChild(summaryCard);
+        }
+      }
+
+      if (!items.length) { c.innerHTML += '<div class="empty">No issued equipment found.</div>'; return; }
       items.forEach(i => c.appendChild(buildGearCard(i)));
     };
 
@@ -2650,6 +2679,7 @@
           ${i.status==="issued" ? `<button class="user-btn" onclick="reassignGear('${i.id}')">&#128260; Reassign</button>` : ""}
           ${i.status==="issued" ? `<button class="user-btn" onclick="returnGearToStorage('${i.id}')">&#128230; Return to Storage</button>` : ""}
           ${i.reorderLink ? `<a href="${i.reorderLink}" target="_blank" class="user-btn" style="text-decoration:none;display:inline-block;">&#128722; Reorder</a>` : ""}
+          <button class="user-btn" onclick="duplicateIssuedGear('${i.id}')">&#10697; Duplicate</button>
           <button class="user-btn" onclick="editIssuedGear('${i.id}')">&#9998; Edit</button>
           <button class="user-btn" style="color:var(--red)" onclick="deleteIssuedGear('${i.id}')">&#128465; Delete</button>
         </div>`;
@@ -2874,6 +2904,25 @@
         showToast("Updated");
       };
       modal.style.display = "flex";
+    };
+
+    window.duplicateIssuedGear = async function(id) {
+      const snap = await getDoc(doc(db,"issuedGear",id));
+      const d = snap.data(); if (!d) return;
+      if (!confirm("Duplicate \"" + (d.itemName||"this item") + "\"? The copy will be placed In Storage.")) return;
+      await addDoc(collection(db,"issuedGear"), {
+        responderId: "", responderName: "", unitNumber: "",
+        itemName:        d.itemName || "",
+        manufacturer:    d.manufacturer || "",
+        placeOfPurchase: d.placeOfPurchase || "",
+        replacementValue:d.replacementValue || 0,
+        reorderLink:     d.reorderLink || "",
+        notes:           d.notes || "",
+        status: "storage",
+        dateIssued: serverTimestamp(),
+        issuedBy: currentUser.displayName || currentUser.email
+      });
+      showToast("Duplicate of \"" + (d.itemName||"item") + "\" added to storage.");
     };
 
     window.deleteIssuedGear = async function(id) {
@@ -3265,7 +3314,7 @@
     <div class="tab"            data-tab="mycalls"   onclick="switchTab('mycalls',this)">&#128203; Call Log</div>
     <div class="tab admin-only" data-tab="log"      onclick="switchTab('log',this)">&#128203; Activity Log</div>
     <div class="tab admin-only" data-tab="reports"  onclick="switchTab('reports',this)">&#128196; Reports</div>
-    <div class="tab admin-only" data-tab="issued"   onclick="switchTab('issued',this)">&#127919; Issued Equipment</div>
+    <div class="tab admin-only" data-tab="issued"   onclick="switchTab('issued',this)">&#128295; Issued Equipment</div>
     <div class="tab admin-only" data-tab="users"    onclick="switchTab('users',this)">&#128101; Users</div>
   </div>
 
