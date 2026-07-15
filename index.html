@@ -2686,7 +2686,88 @@
       return card;
     }
 
-    window.showAddToStorage = function() {
+    window.showMergeSuggestions = async function() {
+      const modal = document.getElementById("modal");
+      document.getElementById("modal-title").textContent = "Suggested Merges";
+      document.getElementById("modal-body").innerHTML = `<div style="color:var(--muted);font-size:.88rem;padding:16px 0;">&#8987; Analyzing items for duplicates...</div>`;
+      document.getElementById("modal-confirm").style.display = "none";
+      modal.style.display = "flex";
+
+      // Gather unique item names from all issued gear
+      const allItems = window._allIssuedGear.filter(i => i.itemName);
+      const uniqueNames = [...new Set(allItems.map(i => i.itemName.trim()))];
+
+      if (uniqueNames.length < 2) {
+        document.getElementById("modal-body").innerHTML = `<div class="empty">Not enough items to suggest merges.</div>`;
+        return;
+      }
+
+      try {
+        const resp = await fetch("https://api.anthropic.com/v1/messages", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: "claude-sonnet-4-6",
+            max_tokens: 1000,
+            messages: [{
+              role: "user",
+              content: `You are helping deduplicate an equipment inventory. Below is a list of item names. Group items that refer to the same type of product (e.g. "Black Jack Tire Plug Kit" and "Black Jack KT-340 Tire Repair Kit" are the same product). Only suggest groups where there are 2+ similar items. Return ONLY valid JSON — an array of groups, each with "canonical" (the best unified name to use) and "items" (array of the original names). Example: [{"canonical":"Black Jack Tire Repair Kit","items":["Black Jack Tire Plug Kit","Black Jack KT-340 Tire Repair Kit"]}]. If no duplicates found, return [].
+
+Items:
+${uniqueNames.map((n,i)=>`${i+1}. ${n}`).join("\n")}`
+            }]
+          })
+        });
+        const data = await resp.json();
+        const raw = (data.content||[]).find(b=>b.type==="text")?.text || "[]";
+        let groups = [];
+        try { groups = JSON.parse(raw.replace(/```json|```/g,"").trim()); } catch(e) { groups = []; }
+
+        if (!groups.length) {
+          document.getElementById("modal-body").innerHTML = `<div class="empty" style="padding:16px 0;">&#10003; No obvious duplicates found.</div>`;
+          return;
+        }
+
+        window._mergeGroups = groups.map(g => ({
+          canonical: g.canonical,
+          ids: allItems.filter(i => g.items.includes(i.itemName)).map(i => i.id),
+          items: g.items
+        }));
+
+        let html = `<div style="font-size:.78rem;color:var(--muted);margin-bottom:14px;">Found ${groups.length} potential merge group${groups.length!==1?"s":""}. Click Apply to rename all matching items to the canonical name.</div>`;
+        window._mergeGroups.forEach((g, gi) => {
+          html += `
+            <div style="border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:10px;">
+              <div style="font-size:.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px;">Merge group ${gi+1} &bull; ${g.ids.length} record${g.ids.length!==1?"s":""}</div>
+              <div style="font-size:.88rem;color:var(--text);margin-bottom:8px;">
+                ${g.items.map(n=>`<span style="background:var(--surface2);border-radius:4px;padding:2px 7px;margin:2px;display:inline-block;font-size:.78rem;">${n}</span>`).join(" ")}
+              </div>
+              <div style="display:flex;gap:8px;align-items:center;">
+                <span style="font-size:.72rem;color:var(--sky);">&#8594; Rename all to:</span>
+                <input id="merge-canonical-${gi}" value="${g.canonical}" style="flex:1;padding:6px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:.82rem;">
+                <button class="user-btn" onclick="applyMerge(${gi})">Apply</button>
+              </div>
+            </div>`;
+        });
+
+        document.getElementById("modal-body").innerHTML = html;
+      } catch(e) {
+        document.getElementById("modal-body").innerHTML = `<div class="empty" style="color:var(--red)">Error: ${e.message}</div>`;
+      }
+    };
+
+    window.applyMerge = async function(gi) {
+      const g = window._mergeGroups?.[gi];
+      if (!g) return;
+      const canonical = document.getElementById("merge-canonical-"+gi)?.value.trim();
+      if (!canonical) { alert("Please enter a canonical name."); return; }
+      if (!confirm(`Rename ${g.ids.length} record${g.ids.length!==1?"s":""} to "${canonical}"?`)) return;
+      for (const id of g.ids) {
+        await updateDoc(doc(db,"issuedGear",id), { itemName: canonical });
+      }
+      showToast(`${g.ids.length} record${g.ids.length!==1?"s":""} renamed to "${canonical}"`);
+      closeModal();
+    };
       const modal = document.getElementById("modal");
       document.getElementById("modal-title").textContent = "Add to Storage";
       document.getElementById("modal-body").innerHTML = `
@@ -2765,27 +2846,61 @@
     };
 
     window.showIssueGear = function() {
+      const storageItems = window._allIssuedGear.filter(i => i.status === "storage");
+      const storageOptions = storageItems.length
+        ? storageItems.map(i => `<option value="${i.id}" data-name="${i.itemName||""}" data-mfr="${i.manufacturer||""}" data-purchase="${i.placeOfPurchase||""}" data-value="${i.replacementValue||0}" data-reorder="${i.reorderLink||""}" data-notes="${i.notes||""}">${i.itemName||"Unknown"}${i.manufacturer?" — "+i.manufacturer:""}</option>`).join("")
+        : `<option value="" disabled>No items in storage</option>`;
+
+      // Pre-select responder if we're in a member detail view
+      const preselectedId = window._issuedSelectedMember;
+      const preselectedUser = preselectedId ? window._allUsers.find(u => u.id === preselectedId) : null;
+
       const modal = document.getElementById("modal");
       document.getElementById("modal-title").textContent = "Issue New Item";
       document.getElementById("modal-body").innerHTML = `
         <div class="form-group"><label>Responder</label>
           <select id="ig-responder">
             <option value="">— Select responder —</option>
-            ${window._allUsers.map(u=>`<option value="${u.id}" data-name="${u.displayName||u.email}" data-unit="${u.unitNumber||""}">${u.unitNumber?u.unitNumber+" — ":""}${u.displayName||u.email}</option>`).join("")}
+            ${window._allUsers.map(u=>`<option value="${u.id}" data-name="${u.displayName||u.email}" data-unit="${u.unitNumber||""}" ${u.id===preselectedId?"selected":""}>${u.unitNumber?u.unitNumber+" — ":""}${u.displayName||u.email}</option>`).join("")}
           </select>
         </div>
-        <div class="form-group"><label>Item Name</label>
-          <input id="ig-item" type="text" placeholder="e.g. Reflective Vest, House Key, Impact Wrench"></div>
-        <div class="form-group"><label>Manufacturer</label>
-          <input id="ig-manufacturer" type="text" placeholder="e.g. Milwaukee, 5.11 Tactical"></div>
-        <div class="form-group"><label>Place of Purchase</label>
-          <input id="ig-purchase" type="text" placeholder="e.g. Home Depot, Amazon"></div>
-        <div class="form-group"><label>Replacement Value ($)</label>
-          <input id="ig-value" type="number" step="0.01" min="0" placeholder="0.00"></div>
-        <div class="form-group"><label>Reorder Link</label>
-          <input id="ig-reorder" type="url" placeholder="https://..."></div>
-        <div class="form-group"><label>Notes (optional)</label>
-          <input id="ig-notes" type="text" placeholder="e.g. Key #12, Vest size L"></div>
+        <div class="form-group"><label>Issue from storage?</label>
+          <select id="ig-source" onchange="onIssueSourceChange()">
+            <option value="storage">Yes — pick from storage</option>
+            <option value="new">No — enter new item details</option>
+          </select>
+        </div>
+        <div id="ig-storage-section">
+          <div class="form-group"><label>Select Item from Storage</label>
+            <select id="ig-storage-item" onchange="onStorageItemSelect()">
+              <option value="">— Select item —</option>
+              ${storageOptions}
+            </select>
+          </div>
+        </div>
+        <div id="ig-new-section" style="display:none;">
+          <div class="form-group">
+            <label>Copy details from existing item (optional)</label>
+            <select id="ig-copy-from" onchange="onCopyFromExisting()">
+              <option value="">— Or copy from an existing item —</option>
+              ${[...new Map(window._allIssuedGear.filter(i=>i.itemName).map(i=>[i.itemName+"|"+i.manufacturer, i])).values()]
+                .sort((a,b)=>(a.itemName||"").localeCompare(b.itemName||""))
+                .map(i=>`<option value="${i.id}" data-name="${i.itemName||""}" data-mfr="${i.manufacturer||""}" data-purchase="${i.placeOfPurchase||""}" data-value="${i.replacementValue||0}" data-reorder="${i.reorderLink||""}">${i.itemName||""}${i.manufacturer?" — "+i.manufacturer:""}</option>`).join("")}
+            </select>
+          </div>
+          <div class="form-group"><label>Item Name</label>
+            <input id="ig-item" type="text" placeholder="e.g. Reflective Vest, House Key, Impact Wrench"></div>
+          <div class="form-group"><label>Manufacturer</label>
+            <input id="ig-manufacturer" type="text" placeholder="e.g. Milwaukee, 5.11 Tactical"></div>
+          <div class="form-group"><label>Place of Purchase</label>
+            <input id="ig-purchase" type="text" placeholder="e.g. Home Depot, Amazon"></div>
+          <div class="form-group"><label>Replacement Value ($)</label>
+            <input id="ig-value" type="number" step="0.01" min="0" placeholder="0.00"></div>
+          <div class="form-group"><label>Reorder Link</label>
+            <input id="ig-reorder" type="url" placeholder="https://..."></div>
+          <div class="form-group"><label>Notes (optional)</label>
+            <input id="ig-notes" type="text" placeholder="e.g. Key #12, Vest size L"></div>
+        </div>
       `;
       document.getElementById("modal-confirm").textContent = "Issue Item";
       document.getElementById("modal-confirm").style.display = "";
@@ -2793,30 +2908,71 @@
       modal.style.display = "flex";
     };
 
+    window.onCopyFromExisting = function() {
+      const sel = document.getElementById("ig-copy-from");
+      const opt = sel.options[sel.selectedIndex];
+      if (!sel.value) return;
+      document.getElementById("ig-item").value        = opt.dataset.name || "";
+      document.getElementById("ig-manufacturer").value = opt.dataset.mfr || "";
+      document.getElementById("ig-purchase").value    = opt.dataset.purchase || "";
+      document.getElementById("ig-value").value       = opt.dataset.value || "";
+      document.getElementById("ig-reorder").value     = opt.dataset.reorder || "";
+      // Reset the dropdown so it doesn't look like it's still selected
+      sel.value = "";
+    };
+
+    window.onIssueSourceChange = function() {
+      const fromStorage = document.getElementById("ig-source").value === "storage";
+      document.getElementById("ig-storage-section").style.display = fromStorage ? "" : "none";
+      document.getElementById("ig-new-section").style.display = fromStorage ? "none" : "";
+    };
+
+    window.onStorageItemSelect = function() {
+      // No-op — data read at confirm time
+    };
+
     async function confirmIssueGear() {
       const sel = document.getElementById("ig-responder");
       const opt = sel.options[sel.selectedIndex];
-      const item = document.getElementById("ig-item")?.value.trim();
-      const manufacturer = document.getElementById("ig-manufacturer")?.value.trim() || "";
-      const placeOfPurchase = document.getElementById("ig-purchase")?.value.trim() || "";
-      const replacementValue = parseFloat(document.getElementById("ig-value")?.value) || 0;
-      const reorderLink = document.getElementById("ig-reorder")?.value.trim() || "";
-      const notes = document.getElementById("ig-notes")?.value.trim() || "";
-      if (!sel.value || !item) { alert("Please select a responder and enter an item."); return; }
-      await addDoc(collection(db,"issuedGear"), {
-        responderId: sel.value,
-        responderName: opt.dataset.name || "",
-        unitNumber: opt.dataset.unit || "",
-        itemName: item,
-        manufacturer, placeOfPurchase, replacementValue, reorderLink,
-        notes,
-        status: "issued",
-        dateIssued: serverTimestamp(),
-        issuedBy: currentUser.displayName || currentUser.email
-      });
-      await addLog({ action:"ISSUED", equipmentName: item + " to " + (opt.dataset.name||""), userId:currentUser.uid, userName:currentUser.displayName||currentUser.email });
-      closeModal();
-      showToast(item + " issued to " + (opt.dataset.name||""));
+      if (!sel.value) { alert("Please select a responder."); return; }
+
+      const fromStorage = document.getElementById("ig-source").value === "storage";
+
+      if (fromStorage) {
+        // Issue an existing storage item
+        const storageSel = document.getElementById("ig-storage-item");
+        const storageId = storageSel?.value;
+        if (!storageId) { alert("Please select an item from storage."); return; }
+        await updateDoc(doc(db,"issuedGear",storageId), {
+          responderId:   sel.value,
+          responderName: opt.dataset.name || "",
+          unitNumber:    opt.dataset.unit || "",
+          status:        "issued",
+          dateIssued:    serverTimestamp(),
+          issuedBy:      currentUser.displayName || currentUser.email
+        });
+        const storageOpt = storageSel.options[storageSel.selectedIndex];
+        await addLog({ action:"ISSUED", equipmentName: (storageOpt.dataset.name||"item") + " (from storage) to " + (opt.dataset.name||""), userId:currentUser.uid, userName:currentUser.displayName||currentUser.email });
+        closeModal();
+        showToast((storageOpt.dataset.name||"Item") + " issued to " + (opt.dataset.name||""));
+      } else {
+        // Create a brand new issued item
+        const item = document.getElementById("ig-item")?.value.trim();
+        if (!item) { alert("Please enter an item name."); return; }
+        const manufacturer    = document.getElementById("ig-manufacturer")?.value.trim() || "";
+        const placeOfPurchase = document.getElementById("ig-purchase")?.value.trim() || "";
+        const replacementValue= parseFloat(document.getElementById("ig-value")?.value) || 0;
+        const reorderLink     = document.getElementById("ig-reorder")?.value.trim() || "";
+        const notes           = document.getElementById("ig-notes")?.value.trim() || "";
+        await addDoc(collection(db,"issuedGear"), {
+          responderId: sel.value, responderName: opt.dataset.name||"", unitNumber: opt.dataset.unit||"",
+          itemName: item, manufacturer, placeOfPurchase, replacementValue, reorderLink, notes,
+          status: "issued", dateIssued: serverTimestamp(), issuedBy: currentUser.displayName||currentUser.email
+        });
+        await addLog({ action:"ISSUED", equipmentName: item + " to " + (opt.dataset.name||""), userId:currentUser.uid, userName:currentUser.displayName||currentUser.email });
+        closeModal();
+        showToast(item + " issued to " + (opt.dataset.name||""));
+      }
     }
 
     window.returnGearToStorage = async function(id) {
@@ -3384,6 +3540,7 @@
         <button class="tbtn tbtn-primary" onclick="showIssueGear()" style="flex:1">+ Issue Item</button>
         <button class="tbtn tbtn-muted" onclick="showAddToStorage()" style="flex:1">+ Add to Storage</button>
       </div>
+      <button class="tbtn tbtn-muted" onclick="showMergeSuggestions()" style="width:100%;">&#9878; Suggest Duplicate Merges</button>
       <input type="text" id="issued-search" placeholder="&#128269; Search by responder or item..." oninput="filterIssuedGear()">
       <div style="display:flex;gap:6px;">
         <button class="user-filter-btn active" onclick="setIssuedFilter('out',this)">Issued Out</button>
