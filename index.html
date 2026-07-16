@@ -1343,7 +1343,32 @@
     window.showAddEquipment = function() {
       const modal = document.getElementById("modal");
       document.getElementById("modal-title").textContent = "Add Equipment Unit";
+
+      // Build unique equipment options for import (dedupe by name+manufacturer)
+      const seen = new Set();
+      const importOptions = Object.values(equipmentMap)
+        .filter(d => { const k = d.name+"|"+(d.manufacturer||""); if (seen.has(k)) return false; seen.add(k); return true; })
+        .sort((a,b) => (a.name||"").localeCompare(b.name||""))
+        .map(d => {
+          const label = d.name + (d.manufacturer ? " — " + d.manufacturer : "");
+          return '<option value="' + (d.eqId||"") + '" '
+            + 'data-name="' + (d.name||"").replace(/"/g,"&quot;") + '" '
+            + 'data-mfr="' + (d.manufacturer||"").replace(/"/g,"&quot;") + '" '
+            + 'data-model="' + (d.modelNumber||"").replace(/"/g,"&quot;") + '" '
+            + 'data-value="' + (d.replacementValue||0) + '" '
+            + 'data-purchase="' + (d.placeOfPurchase||"").replace(/"/g,"&quot;") + '" '
+            + 'data-reorder="' + (d.reorderLink||"").replace(/"/g,"&quot;") + '" '
+            + 'data-reminder="' + (d.reminderDays??7) + '">'
+            + label + '</option>';
+        }).join("");
+
       document.getElementById("modal-body").innerHTML = `
+        <div class="form-group"><label>Copy from existing item (optional)</label>
+          <select id="m-import" onchange="onImportEquipment()">
+            <option value="">— Or copy from existing —</option>
+            ${importOptions}
+          </select>
+        </div>
         <div class="form-group"><label>Name</label>
           <input id="m-name" type="text" placeholder="e.g. Large Heater" oninput="previewId()"></div>
         <div class="form-group"><label>Equipment ID</label>
@@ -1376,8 +1401,32 @@
       modal.style.display = "flex";
     };
 
+    window.onImportEquipment = function() {
+      const sel = document.getElementById("m-import");
+      const opt = sel.options[sel.selectedIndex];
+      if (!sel.value) return;
+      document.getElementById("m-name").value         = opt.dataset.name || "";
+      document.getElementById("m-manufacturer").value = opt.dataset.mfr || "";
+      document.getElementById("m-model").value        = opt.dataset.model || "";
+      document.getElementById("m-value").value        = opt.dataset.value || "";
+      document.getElementById("m-purchase").value     = opt.dataset.purchase || "";
+      document.getElementById("m-reorder").value      = opt.dataset.reorder || "";
+      document.getElementById("m-reminder").value     = opt.dataset.reminder || "7";
+      // Trigger ID preview with new name
+      previewId();
+      // Reset dropdown
+      sel.value = "";
+    };
+
     window.addKitComponentRow = function() {
       window._kitComponents.push({ name: "", status: "available", value: 0, manufacturer: "", modelNumber: "", placeOfPurchase: "", reorderLink: "" });
+      renderKitComponentRows();
+    };
+
+    window.duplicateKitComponentRow = function(i) {
+      const comp = window._kitComponents[i];
+      if (!comp) return;
+      window._kitComponents.splice(i + 1, 0, { ...comp });
       renderKitComponentRows();
     };
 
@@ -1408,7 +1457,8 @@
               <option value="broken"    ${comp.status==="broken"   ?"selected":""}>Broken</option>
               <option value="missing"   ${comp.status==="missing"  ?"selected":""}>Missing</option>
             </select>
-            <button type="button" style="background:none;border:none;color:var(--red);font-size:1.1rem;cursor:pointer;padding:4px 8px;" data-remove="${i}">&#10005;</button>
+            <button type="button" style="background:none;border:none;color:#a0a0ff;font-size:1rem;cursor:pointer;padding:4px 6px;" data-dupe="${i}" title="Duplicate">&#10697;</button>
+            <button type="button" style="background:none;border:none;color:var(--red);font-size:1.1rem;cursor:pointer;padding:4px 6px;" data-remove="${i}">&#10005;</button>
           </div>
           <div class="kit-field-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px;">
             <input type="text" placeholder="Manufacturer" value="${comp.manufacturer||""}" style="padding:7px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:.78rem;" data-field="manufacturer" data-idx="${i}">
@@ -1439,6 +1489,9 @@
       });
       c.querySelectorAll("[data-remove]").forEach(el => {
         el.addEventListener("click", function() { removeKitComponentRow(parseInt(this.dataset.remove)); });
+      });
+      c.querySelectorAll("[data-dupe]").forEach(el => {
+        el.addEventListener("click", function() { duplicateKitComponentRow(parseInt(this.dataset.dupe)); });
       });
     }
 
