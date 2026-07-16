@@ -2767,6 +2767,8 @@
       showToast(`${g.ids.length} record${g.ids.length!==1?"s":""} renamed to "${canonical}"`);
       closeModal();
     };
+
+    window.showAddToStorage = function() {
       const modal = document.getElementById("modal");
       document.getElementById("modal-title").textContent = "Add to Storage";
       document.getElementById("modal-body").innerHTML = `
@@ -2846,61 +2848,60 @@
 
     window.showIssueGear = function() {
       const storageItems = window._allIssuedGear.filter(i => i.status === "storage");
-      const storageOptions = storageItems.length
-        ? storageItems.map(i => `<option value="${i.id}" data-name="${i.itemName||""}" data-mfr="${i.manufacturer||""}" data-purchase="${i.placeOfPurchase||""}" data-value="${i.replacementValue||0}" data-reorder="${i.reorderLink||""}" data-notes="${i.notes||""}">${i.itemName||"Unknown"}${i.manufacturer?" — "+i.manufacturer:""}</option>`).join("")
-        : `<option value="" disabled>No items in storage</option>`;
+      let storageOptions = storageItems.length
+        ? storageItems.map(i => {
+            const name = (i.itemName||"").replace(/"/g,"&quot;");
+            const mfr  = (i.manufacturer||"").replace(/"/g,"&quot;");
+            const pur  = (i.placeOfPurchase||"").replace(/"/g,"&quot;");
+            const reo  = (i.reorderLink||"").replace(/"/g,"&quot;");
+            return '<option value="' + i.id + '" data-name="' + name + '" data-mfr="' + mfr + '" data-purchase="' + pur + '" data-value="' + (i.replacementValue||0) + '" data-reorder="' + reo + '">' + (i.itemName||"Unknown") + (i.manufacturer ? " — " + i.manufacturer : "") + "</option>";
+          }).join("")
+        : '<option value="" disabled>No items in storage</option>';
 
-      // Pre-select responder if we're in a member detail view
       const preselectedId = window._issuedSelectedMember;
-      const preselectedUser = preselectedId ? window._allUsers.find(u => u.id === preselectedId) : null;
+      const responderOptions = window._allUsers.map(u => {
+        const sel = u.id === preselectedId ? " selected" : "";
+        const name = (u.displayName||u.email).replace(/"/g,"&quot;");
+        const unit = (u.unitNumber||"").replace(/"/g,"&quot;");
+        const label = (u.unitNumber ? u.unitNumber + " \u2014 " : "") + (u.displayName||u.email);
+        return '<option value="' + u.id + '" data-name="' + name + '" data-unit="' + unit + '"' + sel + '>' + label + '</option>';
+      }).join("");
+
+      const existingItems = [...new Map(window._allIssuedGear.filter(i=>i.itemName).map(i=>[i.itemName+"|"+i.manufacturer, i])).values()]
+        .sort((a,b)=>(a.itemName||"").localeCompare(b.itemName||""));
+      const copyOptions = existingItems.map(i => {
+        const n = (i.itemName||"").replace(/"/g,"&quot;");
+        const m = (i.manufacturer||"").replace(/"/g,"&quot;");
+        const p = (i.placeOfPurchase||"").replace(/"/g,"&quot;");
+        const r = (i.reorderLink||"").replace(/"/g,"&quot;");
+        return '<option value="' + i.id + '" data-name="' + n + '" data-mfr="' + m + '" data-purchase="' + p + '" data-value="' + (i.replacementValue||0) + '" data-reorder="' + r + '">' + (i.itemName||"") + (i.manufacturer?" — "+i.manufacturer:"") + "</option>";
+      }).join("");
 
       const modal = document.getElementById("modal");
       document.getElementById("modal-title").textContent = "Issue New Item";
-      document.getElementById("modal-body").innerHTML = `
-        <div class="form-group"><label>Responder</label>
-          <select id="ig-responder">
-            <option value="">— Select responder —</option>
-            ${window._allUsers.map(u=>`<option value="${u.id}" data-name="${u.displayName||u.email}" data-unit="${u.unitNumber||""}" ${u.id===preselectedId?"selected":""}>${u.unitNumber?u.unitNumber+" — ":""}${u.displayName||u.email}</option>`).join("")}
-          </select>
-        </div>
-        <div class="form-group"><label>Issue from storage?</label>
-          <select id="ig-source" onchange="onIssueSourceChange()">
-            <option value="storage">Yes — pick from storage</option>
-            <option value="new">No — enter new item details</option>
-          </select>
-        </div>
-        <div id="ig-storage-section">
-          <div class="form-group"><label>Select Item from Storage</label>
-            <select id="ig-storage-item" onchange="onStorageItemSelect()">
-              <option value="">— Select item —</option>
-              ${storageOptions}
-            </select>
-          </div>
-        </div>
-        <div id="ig-new-section" style="display:none;">
-          <div class="form-group">
-            <label>Copy details from existing item (optional)</label>
-            <select id="ig-copy-from" onchange="onCopyFromExisting()">
-              <option value="">— Or copy from an existing item —</option>
-              ${[...new Map(window._allIssuedGear.filter(i=>i.itemName).map(i=>[i.itemName+"|"+i.manufacturer, i])).values()]
-                .sort((a,b)=>(a.itemName||"").localeCompare(b.itemName||""))
-                .map(i=>`<option value="${i.id}" data-name="${i.itemName||""}" data-mfr="${i.manufacturer||""}" data-purchase="${i.placeOfPurchase||""}" data-value="${i.replacementValue||0}" data-reorder="${i.reorderLink||""}">${i.itemName||""}${i.manufacturer?" — "+i.manufacturer:""}</option>`).join("")}
-            </select>
-          </div>
-          <div class="form-group"><label>Item Name</label>
-            <input id="ig-item" type="text" placeholder="e.g. Reflective Vest, House Key, Impact Wrench"></div>
-          <div class="form-group"><label>Manufacturer</label>
-            <input id="ig-manufacturer" type="text" placeholder="e.g. Milwaukee, 5.11 Tactical"></div>
-          <div class="form-group"><label>Place of Purchase</label>
-            <input id="ig-purchase" type="text" placeholder="e.g. Home Depot, Amazon"></div>
-          <div class="form-group"><label>Replacement Value ($)</label>
-            <input id="ig-value" type="number" step="0.01" min="0" placeholder="0.00"></div>
-          <div class="form-group"><label>Reorder Link</label>
-            <input id="ig-reorder" type="url" placeholder="https://..."></div>
-          <div class="form-group"><label>Notes (optional)</label>
-            <input id="ig-notes" type="text" placeholder="e.g. Key #12, Vest size L"></div>
-        </div>
-      `;
+      document.getElementById("modal-body").innerHTML =
+        '<div class="form-group"><label>Responder</label>' +
+        '<select id="ig-responder"><option value="">— Select responder —</option>' + responderOptions + '</select></div>' +
+        '<div class="form-group"><label>Issue from storage?</label>' +
+        '<select id="ig-source" onchange="onIssueSourceChange()">' +
+        '<option value="storage">Yes — pick from storage</option>' +
+        '<option value="new">No — enter new item details</option>' +
+        '</select></div>' +
+        '<div id="ig-storage-section">' +
+        '<div class="form-group"><label>Select Item from Storage</label>' +
+        '<select id="ig-storage-item" onchange="onStorageItemSelect()">' +
+        '<option value="">— Select item —</option>' + storageOptions + '</select></div></div>' +
+        '<div id="ig-new-section" style="display:none;">' +
+        '<div class="form-group"><label>Copy details from existing item (optional)</label>' +
+        '<select id="ig-copy-from" onchange="onCopyFromExisting()">' +
+        '<option value="">— Or copy from an existing item —</option>' + copyOptions + '</select></div>' +
+        '<div class="form-group"><label>Item Name</label><input id="ig-item" type="text" placeholder="e.g. Reflective Vest, House Key, Impact Wrench"></div>' +
+        '<div class="form-group"><label>Manufacturer</label><input id="ig-manufacturer" type="text" placeholder="e.g. Milwaukee, 5.11 Tactical"></div>' +
+        '<div class="form-group"><label>Place of Purchase</label><input id="ig-purchase" type="text" placeholder="e.g. Home Depot, Amazon"></div>' +
+        '<div class="form-group"><label>Replacement Value ($)</label><input id="ig-value" type="number" step="0.01" min="0" placeholder="0.00"></div>' +
+        '<div class="form-group"><label>Reorder Link</label><input id="ig-reorder" type="url" placeholder="https://..."></div>' +
+        '<div class="form-group"><label>Notes (optional)</label><input id="ig-notes" type="text" placeholder="e.g. Key #12, Vest size L"></div>' +
+        '</div>';
       document.getElementById("modal-confirm").textContent = "Issue Item";
       document.getElementById("modal-confirm").style.display = "";
       document.getElementById("modal-confirm").onclick = confirmIssueGear;
