@@ -167,14 +167,26 @@
       if (currentRole === "dispatcher") {
         document.querySelectorAll(".dispatcher-visible").forEach(el => el.style.display = "");
       }
-      const memberField = document.getElementById("co-member");
-      if (memberField) memberField.value = currentUser.displayName || "";
+      const memberField = document.getElementById("co-member-field");
+      if (memberField) {
+        if (currentRole === "admin" || currentRole === "dispatcher") {
+          // Will be replaced with dropdown once _allUsers is loaded
+          memberField.innerHTML = '<input type="text" id="co-member" placeholder="Your name" value="' + (currentUser.displayName||"").replace(/"/g,"&quot;") + '">';
+          // Will be replaced with dropdown once _allUsers is loaded
+        } else {
+          // Members/dispatchers see their own name read-only
+          const displayName = currentUser.displayName || "";
+          memberField.innerHTML = '<input type="text" id="co-member" value="' + displayName.replace(/"/g,"&quot;") + '" readonly style="background:var(--surface2);opacity:.7;cursor:not-allowed;">';
+        }
+      }
       loadEquipment();
       loadMyCalls();
       if (currentRole==="admin") {
         loadLog();
         window.loadUsers();
-        setTimeout(startReminderSchedule, 3000); // start after equipment loads
+        setTimeout(startReminderSchedule, 3000);
+      } else if (currentRole === "dispatcher") {
+        window.loadUsers();
       }
     }
 
@@ -245,7 +257,18 @@
           const l = d.name.toLowerCase();
           let category;
           if (l.includes("heater"))        category = "Heaters";
-          else if (l.includes("ac"))       category = "AC Units";
+          else if (l.includes("ac") || l.includes("air cond") || l.includes("window unit")) {
+            // Extract BTU — look for patterns like "6k", "6000", "9k btu", "10k btu", "12000 btu"
+            const btuMatch = l.match(/(\d+\.?\d*)\s*k\s*b?t?u?/) || l.match(/(\d{4,6})\s*b?t?u?/);
+            if (btuMatch) {
+              let btu = parseFloat(btuMatch[1]);
+              if (btu < 1000) btu = btu * 1000; // convert "6k" → 6000
+              const btuLabel = btu >= 1000 ? (btu/1000).toFixed(0) + "K BTU" : btu + " BTU";
+              category = "AC Units — " + btuLabel;
+            } else {
+              category = "AC Units";
+            }
+          }
           else if (l.includes("fan"))      category = "Fans";
           else if (l.includes("ez spare")) category = "EZ Spares";
           else if (l.includes("spare"))    category = "Spares";
@@ -261,30 +284,53 @@
 
         const summaryCard = document.createElement("div");
         summaryCard.className = "summary-card";
+
+        // Separate AC subcategories from others
+        const acEntries = Object.entries(summary).filter(([cat]) => cat.startsWith("AC Units"));
+        const otherEntries = Object.entries(summary).filter(([cat]) => !cat.startsWith("AC Units"));
+
+        // Compute AC totals
+        const acTotals = { total:0, available:0, out:0, broken:0, missing:0 };
+        acEntries.forEach(([,s]) => { acTotals.total+=s.total; acTotals.available+=s.available; acTotals.out+=s.out; acTotals.broken+=s.broken; acTotals.missing+=s.missing; });
+
+        // Sort AC entries by BTU numerically
+        acEntries.sort((a,b) => a[0].localeCompare(b[0], undefined, {numeric:true}));
+
+        // Sort other entries
+        const otherOrder = ["Heaters","Fans","EZ Spares","Spares"];
+        otherEntries.sort((a,b) => {
+          const ai = otherOrder.indexOf(a[0]), bi = otherOrder.indexOf(b[0]);
+          if (ai===-1 && bi===-1) return a[0].localeCompare(b[0]);
+          if (ai===-1) return 1; if (bi===-1) return -1;
+          return ai - bi;
+        });
+
+        const renderRow = ([cat, s], indent) => `
+          <div class="summary-row${indent?" summary-row-indent":""}">
+            <div class="summary-name">${indent ? "&#8627; "+cat.replace("AC Units — ","") : cat}</div>
+            <div class="summary-stats">
+              <span class="sum-avail">&#10003; ${s.available} avail</span>
+              ${s.out     ? `<span class="sum-out">&#8599; ${s.out} out</span>` : ""}
+              ${s.broken  ? `<span class="sum-broken">&#128683; ${s.broken} broken</span>` : ""}
+              ${s.missing ? `<span class="sum-missing">&#10067; ${s.missing} missing</span>` : ""}
+              <span class="sum-total">${s.total} total</span>
+            </div>
+          </div>`;
+
+        let summaryRows = "";
+        // AC parent row + nested BTU rows
+        if (acEntries.length) {
+          summaryRows += renderRow(["AC Units", acTotals], false);
+          if (acEntries.length > 1 || acEntries[0][0] !== "AC Units") {
+            acEntries.forEach(e => { summaryRows += renderRow(e, true); });
+          }
+        }
+        // Other categories
+        otherEntries.forEach(e => { summaryRows += renderRow(e, false); });
+
         summaryCard.innerHTML = `
           <div class="summary-title">&#128202; Inventory Summary</div>
-          <div class="summary-grid">
-            ${Object.entries(summary)
-              .sort((a,b) => {
-                const order = ["AC Units","Heaters","Fans","EZ Spares","Spares"];
-                const ai = order.indexOf(a[0]), bi = order.indexOf(b[0]);
-                if (ai===-1 && bi===-1) return a[0].localeCompare(b[0]);
-                if (ai===-1) return 1; if (bi===-1) return -1;
-                return ai - bi;
-              })
-              .map(([cat, s]) => `
-                <div class="summary-row">
-                  <div class="summary-name">${cat}</div>
-                  <div class="summary-stats">
-                    <span class="sum-avail">&#10003; ${s.available} avail</span>
-                    ${s.out     ? `<span class="sum-out">&#8599; ${s.out} out</span>` : ""}
-                    ${s.broken  ? `<span class="sum-broken">&#128683; ${s.broken} broken</span>` : ""}
-                    ${s.missing ? `<span class="sum-missing">&#10067; ${s.missing} missing</span>` : ""}
-                    <span class="sum-total">${s.total} total</span>
-                  </div>
-                </div>
-              `).join("")}
-          </div>
+          <div class="summary-grid">${summaryRows}</div>
         `;
         container.appendChild(summaryCard);
       }
@@ -2528,6 +2574,30 @@
           snap.forEach(d => window._allUsers.push({id:d.id, ...d.data()}));
           window._allUsers.sort((a,b) => unitSortKey(a.unitNumber) - unitSortKey(b.unitNumber));
           window.renderUsers();
+          // Build admin checkout member dropdown
+          if (currentRole === "admin" || currentRole === "dispatcher") {
+            const field = document.getElementById("co-member-field");
+            if (field) {
+              const adminName = (currentUser.displayName||"").replace(/"/g,"&quot;");
+              const opts = window._allUsers
+                .filter(u => {
+                  if (u.role === "admin" || u.role === "dispatcher") return false;
+                  // Also filter by unit prefix for legacy users stored as 'member'
+                  const unit = (u.unitNumber||"").toUpperCase();
+                  if (unit.startsWith("MCD-") || unit.startsWith("MCA-")) return false;
+                  return true;
+                })
+                .map(u => {
+                  const n = (u.displayName||u.email).replace(/"/g,"&quot;");
+                  const label = (u.unitNumber ? u.unitNumber + " — " : "") + (u.displayName||u.email);
+                  return '<option value="' + n + '">' + label + '</option>';
+                }).join("");
+              const meOption = currentRole === "admin"
+                ? '<option value="' + adminName + '">' + (currentUser.displayName||"You") + ' (me)</option>'
+                : '<option value="">— Select responder —</option>';
+              field.innerHTML = '<select id="co-member" style="width:100%;">' + meOption + opts + '</select>';
+            }
+          }
         },
         err => {
           console.error("loadUsers error:", err);
@@ -3283,6 +3353,14 @@
       background: var(--surface2);
       border-radius: 6px;
     }
+    .summary-row-indent {
+      padding-left: 22px;
+      background: transparent;
+      border-left: 2px solid var(--border);
+      margin-left: 8px;
+      border-radius: 0 6px 6px 0;
+    }
+    .summary-row-indent .summary-name { font-size: .78rem; color: var(--muted); font-weight: 500; }
     .summary-name {
       font-family: 'Barlow Condensed', sans-serif;
       font-size: .9rem; font-weight: 700;
@@ -3533,7 +3611,9 @@
       <h3>&#128222; Call Details</h3>
       <div class="form-row">
         <div class="form-group"><label>Call Number *</label><input type="text" id="co-callnum" placeholder="e.g. 247"></div>
-        <div class="form-group"><label>Member</label><input type="text" id="co-member" placeholder="Your name"></div>
+        <div class="form-group"><label>Member</label>
+          <div id="co-member-field"></div>
+        </div>
       </div>
       <div class="form-group"><label>Location</label><input type="text" id="co-location" placeholder="Address or cross-streets" autocomplete="off"></div>
       <div class="form-group"><label>Caller Phone (for return reminders)</label><input type="tel" id="co-phone" placeholder="e.g. 732-555-5555"></div>
