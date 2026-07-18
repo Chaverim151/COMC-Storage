@@ -2737,6 +2737,14 @@
       renderTickets();
     };
 
+    window.clearClosedTickets = async function() {
+      const closed = window._allTickets.filter(t => ["closed","approved","denied"].includes(t.status));
+      if (!closed.length) { showToast("No closed tickets to clear."); return; }
+      if (!confirm(`Delete ${closed.length} closed ticket${closed.length!==1?"s":""}? This cannot be undone.`)) return;
+      for (const t of closed) await deleteDoc(doc(db,"tickets",t.id));
+      showToast(`${closed.length} ticket${closed.length!==1?"s":""} cleared.`);
+    };
+
     window.loadTickets = function() {
       const c = document.getElementById("tickets-list"); if (!c) return;
       c.innerHTML = '<div class="loading">Loading...</div>';
@@ -2809,6 +2817,7 @@
         '<div class="form-group"><label>Details</label><textarea id="tk-details" rows="3" style="width:100%;resize:vertical;font-family:\'Barlow\',sans-serif;font-size:.88rem;padding:10px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:7px;color:var(--text);" placeholder="Provide as much detail as possible..."></textarea></div>';
       document.getElementById("modal-confirm").textContent = "Submit Ticket";
       document.getElementById("modal-confirm").style.display = "";
+      document.getElementById("modal-confirm").onclick = null;
       document.getElementById("modal-confirm").onclick = confirmNewTicket;
       modal.style.display = "flex";
       onTicketTypeChange();
@@ -2835,7 +2844,12 @@
       }
     };
 
+    let _ticketSubmitting = false;
     async function confirmNewTicket() {
+      if (_ticketSubmitting) return;
+      _ticketSubmitting = true;
+      document.getElementById("modal-confirm").disabled = true;
+      try {
       const type    = document.getElementById("tk-type")?.value;
       const subject = document.getElementById("tk-subject")?.value.trim();
       const details = document.getElementById("tk-details")?.value.trim();
@@ -2902,6 +2916,13 @@
       closeModal();
       showToast("Ticket submitted!");
       switchTab("tickets", document.querySelector('[data-tab="tickets"]'));
+      } catch(e) {
+        alert("Error submitting ticket: " + e.message);
+      } finally {
+        _ticketSubmitting = false;
+        const btn = document.getElementById("modal-confirm");
+        if (btn) btn.disabled = false;
+      }
     }
 
     window.resolveTicket = async function(id, status) {
@@ -4034,6 +4055,7 @@
         <button class="user-filter-btn" onclick="setTicketFilter('pending',this)">Pending</button>
         <button class="user-filter-btn" onclick="setTicketFilter('closed',this)">Closed</button>
       </div>
+      <button class="tbtn tbtn-muted admin-only" onclick="clearClosedTickets()" style="width:100%;color:var(--red);">&#128465; Clear Closed Tickets</button>
     </div>
     <div id="tickets-list"></div>
   </div>
