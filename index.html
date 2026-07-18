@@ -47,7 +47,8 @@
     import { initializeApp }
       from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
     import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged,
-             sendPasswordResetEmail, createUserWithEmailAndPassword, updateProfile }
+             sendPasswordResetEmail, createUserWithEmailAndPassword, updateProfile,
+             browserLocalPersistence, setPersistence }
       from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
     import { getFirestore, collection, doc, getDocs, getDoc, addDoc, updateDoc,
              deleteDoc, onSnapshot, serverTimestamp, query, orderBy, setDoc, writeBatch }
@@ -69,6 +70,7 @@
 
     const app          = initializeApp(firebaseConfig);
     const auth         = getAuth(app);
+    setPersistence(auth, browserLocalPersistence).catch(e => console.warn("Persistence:", e));
     const db           = getFirestore(app);
     const storage      = getStorage(app);
     let   messaging;
