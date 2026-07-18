@@ -2870,12 +2870,32 @@
       const ticketRef = await addDoc(collection(db,"tickets"), ticketData);
       await addLog({ action:"TICKET_SUBMITTED", equipmentName: subject, userId:currentUser.uid, userName:currentUser.displayName||currentUser.email });
 
-      // Notify coordinators via Firestore (FCM server-side would read this)
+      // Notify coordinators via Firestore
       await addDoc(collection(db,"notifications"), {
         type: "new_ticket", ticketId: ticketRef.id, ticketType: type, subject,
         submittedByName: ticketData.submittedByName,
         createdAt: serverTimestamp(), read: false, targetRole: "admin"
       });
+
+      // Send FCM push to all coordinators who have a token
+      try {
+        const coordSnap = await getDocs(collection(db,"users"));
+        const tokens = [];
+        coordSnap.forEach(d => { const u=d.data(); if (u.role==="admin" && u.fcmToken) tokens.push(u.fcmToken); });
+        if (tokens.length) {
+          await fetch("https://comc-sms.shmueleidelman-work.workers.dev", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              action: "push",
+              tokens,
+              title: "New Ticket — " + (TICKET_TYPES[type]?.label||type),
+              body: (ticketData.submittedByName||"Someone") + ": " + subject,
+              data: { ticketId: ticketRef.id, type }
+            })
+          });
+        }
+      } catch(e) { console.warn("Push notify failed:", e.message); }
 
       closeModal();
       showToast("Ticket submitted!");
