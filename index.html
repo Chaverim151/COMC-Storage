@@ -5,6 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
   <title>COMC Equipment Manager</title>
   <link rel="icon" type="image/png" href="https://i.ibb.co/WWx03S58/updated-logo.png">
+  <link rel="manifest" href="/manifest.json">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="COMC Equipment">
+  <link rel="apple-touch-icon" href="https://i.ibb.co/WWx03S58/updated-logo.png">
   <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800&family=Barlow:wght@400;500;600&display=swap" rel="stylesheet">
   <!-- Google Places Autocomplete -->
   <script>
@@ -167,18 +172,43 @@
 
     async function registerPushNotifications() {
       if (!messaging) return;
+      if (!('Notification' in window)) return;
+
+      const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
+      const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+
+      // On iOS, only request permission in standalone mode (saved to home screen)
+      if (isIOS && !isStandalone) {
+        // Show a hint to add to home screen instead
+        console.log("iOS: not in standalone mode, skipping push registration");
+        return;
+      }
+
       try {
-        const permission = await Notification.requestPermission();
+        let permission = Notification.permission;
+        if (permission === "default") {
+          // On iOS we need user gesture — show a prompt first
+          if (isIOS) {
+            showToast("Tap to enable notifications →");
+            await new Promise(r => setTimeout(r, 1000));
+          }
+          permission = await Notification.requestPermission();
+        }
         if (permission !== "granted") return;
-        const token = await getToken(messaging, { vapidKey: VAPID_KEY, serviceWorkerRegistration: await navigator.serviceWorker.register("/firebase-messaging-sw.js") });
+
+        const swReg = await navigator.serviceWorker.register("/firebase-messaging-sw.js");
+        const token = await getToken(messaging, { vapidKey: VAPID_KEY, serviceWorkerRegistration: swReg });
         if (token && currentUser) {
-          await updateDoc(doc(db,"users",currentUser.uid), { fcmToken: token });
+          await updateDoc(doc(db,"users",currentUser.uid), { fcmToken: token, fcmUpdatedAt: serverTimestamp() });
+          console.log("FCM token registered");
         }
         onMessage(messaging, payload => {
           const { title, body } = payload.notification || {};
           showToast((title ? title + ": " : "") + (body || "New notification"));
         });
-      } catch(e) { console.warn("Push setup failed:", e.message); }
+      } catch(e) {
+        console.warn("Push setup failed:", e.message);
+      }
     }
 
     function showApp() {

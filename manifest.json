@@ -1,0 +1,22 @@
+{
+  "name": "COMC Equipment Manager",
+  "short_name": "COMC Equipment",
+  "description": "Chaverim of Middlesex County Equipment Management",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#131f29",
+  "theme_color": "#7cc8e8",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "https://i.ibb.co/WWx03S58/updated-logo.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "https://i.ibb.co/WWx03S58/updated-logo.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
