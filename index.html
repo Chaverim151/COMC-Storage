@@ -2891,8 +2891,8 @@
             body: JSON.stringify({
               action: "push",
               tokens,
-              title: "New Ticket — " + (TICKET_TYPES[type]?.label||type),
-              body: (ticketData.submittedByName||"Someone") + ": " + subject,
+              title: "COMC Storage",
+              body: "A New " + (TICKET_TYPES[type]?.label.replace(/^[^\s]+\s/,"") || type) + " Ticket Has Been Created" + (ticketData.submittedByName ? " by " + ticketData.submittedByName : ""),
               data: { ticketId: ticketRef.id, type }
             })
           });
