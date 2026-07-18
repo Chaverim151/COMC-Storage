@@ -44,7 +44,10 @@
     import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged,
              sendPasswordResetEmail, createUserWithEmailAndPassword, updateProfile }
       from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
-    import { getFirestore, collection, doc, getDocs, getDoc, addDoc, updateDoc,
+    import { getMessaging, getToken, onMessage }
+      from "https://www.gstatic.com/firebasejs/10.12.0/firebase-messaging.js";
+    import { getStorage, ref, uploadBytes, getDownloadURL }
+      from "https://www.gstatic.com/firebasejs/10.12.0/firebase-storage.js";
              deleteDoc, onSnapshot, serverTimestamp, query, orderBy, setDoc, writeBatch }
       from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
@@ -61,6 +64,9 @@
     const app          = initializeApp(firebaseConfig);
     const auth         = getAuth(app);
     const db           = getFirestore(app);
+    const storage      = getStorage(app);
+    let   messaging;
+    try { messaging = getMessaging(app); } catch(e) { console.warn("FCM not available:", e.message); }
     const secondaryApp = initializeApp(firebaseConfig, "secondary");
     const secondaryAuth= getAuth(secondaryApp);
 
@@ -155,6 +161,25 @@
       document.getElementById("view-login").style.display = "flex";
       document.getElementById("view-app").style.display   = "none";
     }
+    // ── FCM PUSH NOTIFICATIONS ────────────────────────────────────
+    const VAPID_KEY = "BLi_cZGdQMB1-XG9T5Sh1_CVsyc-4oIKiB8ipGVWg4unx1Pcz9yn_SgSsbrOJS-0bvTy1Lz7TaAlsuEgYvzCcdg";
+
+    async function registerPushNotifications() {
+      if (!messaging) return;
+      try {
+        const permission = await Notification.requestPermission();
+        if (permission !== "granted") return;
+        const token = await getToken(messaging, { vapidKey: VAPID_KEY, serviceWorkerRegistration: await navigator.serviceWorker.register("/firebase-messaging-sw.js") });
+        if (token && currentUser) {
+          await updateDoc(doc(db,"users",currentUser.uid), { fcmToken: token });
+        }
+        onMessage(messaging, payload => {
+          const { title, body } = payload.notification || {};
+          showToast((title ? title + ": " : "") + (body || "New notification"));
+        });
+      } catch(e) { console.warn("Push setup failed:", e.message); }
+    }
+
     function showApp() {
       document.getElementById("view-login").style.display = "none";
       document.getElementById("view-app").style.display   = "block";
@@ -181,6 +206,8 @@
       }
       loadEquipment();
       loadMyCalls();
+      window.loadTickets();
+      registerPushNotifications();
       if (currentRole==="admin") {
         loadLog();
         window.loadUsers();
@@ -2381,8 +2408,12 @@
 
     window.removeUser = async function(uid,name) {
       if(!confirm("Remove "+name+"?"))return;
+      const snap = await getDoc(doc(db,"users",uid));
+      const email = snap.data()?.email || "";
       await deleteDoc(doc(db,"users",uid));
-      await addLog({action:"USER_REMOVED",equipmentName:name,userId:currentUser.uid,userName:currentUser.displayName||currentUser.email});
+      // Store deleted email so provisionAllAccounts knows to send a reset instead of trying to re-create
+      if (email) await setDoc(doc(db,"deletedAuthEmails",uid), { email, deletedAt: serverTimestamp(), deletedBy: currentUser.displayName||currentUser.email });
+      await addLog({action:"USER_REMOVED",equipmentName:name+(email?" ("+email+")":""),userId:currentUser.uid,userName:currentUser.displayName||currentUser.email});
       closeModal(); window.loadUsers(); showToast(name+" removed.");
     };
 
@@ -2390,9 +2421,57 @@
       await sendPasswordResetEmail(auth,email); showToast("Reset email sent to "+email);
     };
 
+    window.provisionAllAccounts = async function() {
+      const status = document.getElementById("provision-status");
+      status.style.display = "";
+      status.textContent = "Checking accounts...";
+
+      const snap = await getDocs(collection(db,"users"));
+      const firestoreUsers = [];
+      snap.forEach(d => { if (d.data().email) firestoreUsers.push({id:d.id, ...d.data()}); });
+
+      if (!firestoreUsers.length) { status.textContent = "No users found."; return; }
+
+      if (!confirm(`Check ${firestoreUsers.length} users and create Firebase Auth accounts for any that don't have one yet?\n\nEach new account will use the default password and receive a reset email.`)) {
+        status.style.display = "none"; return;
+      }
+
+      let created = 0; let skipped = 0; let reset = 0; let errors = 0;
+
+      for (const u of firestoreUsers) {
+        status.textContent = `Processing ${created+skipped+reset+errors+1} / ${firestoreUsers.length}...`;
+        try {
+          const cred = await createUserWithEmailAndPassword(secondaryAuth, u.email, "Chaverim1!");
+          await updateProfile(cred.user, { displayName: u.displayName||"" });
+          await sendPasswordResetEmail(secondaryAuth, u.email);
+          await signOut(secondaryAuth);
+          created++;
+        } catch(e) {
+          if (e.code === "auth/email-already-in-use") {
+            // Auth account exists — check if this was a re-added user (previously deleted)
+            const deletedSnap = await getDocs(collection(db,"deletedAuthEmails"));
+            let wasDeleted = false;
+            deletedSnap.forEach(d => { if (d.data().email === u.email) wasDeleted = true; });
+            if (wasDeleted) {
+              // Send a reset email so they can regain access
+              await sendPasswordResetEmail(secondaryAuth, u.email);
+              reset++;
+            } else {
+              skipped++;
+            }
+          } else {
+            console.warn("Could not provision", u.email, e.message);
+            errors++;
+          }
+        }
+      }
+
+      status.textContent = `✅ Done — ${created} created, ${skipped} already active, ${reset} reset email${reset!==1?"s":""} sent${errors?", "+errors+" error(s)":""}.`;
+      if (created+reset > 0) showToast(`${created+reset} account${created+reset!==1?"s":""} provisioned.`);
+    };
+
     window.exportUsers = async function() {
       const snap = await getDocs(collection(db,"users"));
-      const rows = [["Name","Unit Number","Email","Role"]];
       snap.forEach(d => {
         const u = d.data();
         rows.push([u.displayName||"", u.unitNumber||"", u.email||"", u.role||"member"]);
@@ -2607,7 +2686,227 @@
       unsubs.push(u);
     }
 
-    // ── ISSUED EQUIPMENT ────────────────────────────────────────────
+    // ── TICKET SYSTEM ─────────────────────────────────────────────
+    window._ticketFilter = "open";
+    window._allTickets   = [];
+
+    const TICKET_TYPES = {
+      reimbursement: { label: "💰 Reimbursement",    color: "var(--green)" },
+      equipment:     { label: "🔧 Equipment Request", color: "var(--sky)"   },
+      tech:          { label: "🖥️ Technical Support", color: "var(--yellow)"},
+      other:         { label: "📋 Other",             color: "var(--muted)" }
+    };
+
+    window.setTicketFilter = function(f, el) {
+      window._ticketFilter = f;
+      document.querySelectorAll("#tab-tickets .user-filter-btn").forEach(b => b.classList.remove("active"));
+      if (el) el.classList.add("active");
+      renderTickets();
+    };
+
+    window.loadTickets = function() {
+      const c = document.getElementById("tickets-list"); if (!c) return;
+      c.innerHTML = '<div class="loading">Loading...</div>';
+      const u = onSnapshot(collection(db,"tickets"), snap => {
+        window._allTickets = [];
+        snap.forEach(d => window._allTickets.push({id:d.id,...d.data()}));
+        window._allTickets.sort((a,b)=>(b.createdAt?.seconds||0)-(a.createdAt?.seconds||0));
+        renderTickets();
+        // Update badge
+        const open = window._allTickets.filter(t=>t.status==="open"&&(currentRole==="admin"||(t.submittedById===currentUser?.uid)));
+        const badge = document.getElementById("ticket-badge");
+        if (badge) { badge.textContent = open.length; badge.style.display = open.length ? "" : "none"; }
+      }, err => { console.error(err); });
+      unsubs.push(u);
+    };
+
+    window.renderTickets = function() {
+      const c = document.getElementById("tickets-list"); if (!c) return;
+      const f = window._ticketFilter;
+      let tickets = window._allTickets.slice();
+      // Members see only their own tickets; admins see all
+      if (currentRole !== "admin") tickets = tickets.filter(t => t.submittedById === currentUser?.uid);
+      if (f !== "all") tickets = tickets.filter(t => t.status === f);
+      c.innerHTML = "";
+      if (!tickets.length) { c.innerHTML = '<div class="empty">No tickets found.</div>'; return; }
+      tickets.forEach(t => {
+        const card = document.createElement("div");
+        card.className = "user-card";
+        const type = TICKET_TYPES[t.type] || TICKET_TYPES.other;
+        const date = t.createdAt?.toDate ? t.createdAt.toDate().toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}) : "—";
+        const statusColor = t.status==="open"?"var(--sky)":t.status==="pending"?"var(--yellow)":t.status==="approved"?"var(--green)":t.status==="denied"?"var(--red)":"var(--muted)";
+        card.innerHTML = `
+          <div class="user-info-row">
+            <div class="user-avatar" style="background:${type.color}22;color:${type.color};font-size:1.1rem;">${type.label.split(" ")[0]}</div>
+            <div class="user-details">
+              <div class="user-display-name">${t.subject||type.label}</div>
+              <div class="user-email">${t.submittedByName||"Unknown"} &bull; ${date}</div>
+              ${t.amount ? `<div style="font-size:.75rem;color:var(--green);margin-top:2px;">$${parseFloat(t.amount).toFixed(2)}</div>` : ""}
+              ${t.coordinatorNote ? `<div style="font-size:.72rem;color:var(--muted);margin-top:2px;font-style:italic;">"${t.coordinatorNote}"</div>` : ""}
+            </div>
+            <span style="font-size:.7rem;font-weight:700;padding:3px 8px;border-radius:10px;background:${statusColor}22;color:${statusColor};white-space:nowrap;">${(t.status||"open").toUpperCase()}</span>
+          </div>
+          <div class="user-actions">
+            <button class="user-btn" onclick="viewTicket('${t.id}')">&#128065; View</button>
+            ${currentRole==="admin" && t.status==="open" ? `
+              <button class="user-btn" style="color:var(--green)" onclick="resolveTicket('${t.id}','approved')">&#10003; Approve</button>
+              <button class="user-btn" style="color:var(--red)"   onclick="resolveTicket('${t.id}','denied')">&#10005; Deny</button>
+            ` : ""}
+            ${(currentRole==="admin" || t.submittedById===currentUser?.uid) && t.status==="open" ? `
+              <button class="user-btn" style="color:var(--muted)" onclick="resolveTicket('${t.id}','closed')">Close</button>
+            ` : ""}
+          </div>`;
+        c.appendChild(card);
+      });
+    };
+
+    window.showNewTicket = function() {
+      const modal = document.getElementById("modal");
+      document.getElementById("modal-title").textContent = "New Ticket";
+      document.getElementById("modal-body").innerHTML =
+        '<div class="form-group"><label>Ticket Type</label>' +
+        '<select id="tk-type" onchange="onTicketTypeChange()">' +
+        '<option value="reimbursement">💰 Reimbursement</option>' +
+        '<option value="equipment">🔧 Equipment Request</option>' +
+        '<option value="tech">🖥️ Technical Support</option>' +
+        '<option value="other">📋 Other</option>' +
+        '</select></div>' +
+        '<div class="form-group"><label>Subject</label><input id="tk-subject" type="text" placeholder="Brief description"></div>' +
+        '<div id="tk-type-fields"></div>' +
+        '<div class="form-group"><label>Details</label><textarea id="tk-details" rows="3" style="width:100%;resize:vertical;font-family:\'Barlow\',sans-serif;font-size:.88rem;padding:10px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:7px;color:var(--text);" placeholder="Provide as much detail as possible..."></textarea></div>';
+      document.getElementById("modal-confirm").textContent = "Submit Ticket";
+      document.getElementById("modal-confirm").style.display = "";
+      document.getElementById("modal-confirm").onclick = confirmNewTicket;
+      modal.style.display = "flex";
+      onTicketTypeChange();
+    };
+
+    window.onTicketTypeChange = function() {
+      const type = document.getElementById("tk-type")?.value;
+      const f = document.getElementById("tk-type-fields"); if (!f) return;
+      if (type === "reimbursement") {
+        f.innerHTML =
+          '<div class="form-group"><label>Amount ($)</label><input id="tk-amount" type="number" step="0.01" min="0" placeholder="0.00"></div>' +
+          '<div class="form-group"><label>Reason</label><input id="tk-reason" type="text" placeholder="What was purchased and why?"></div>' +
+          '<div class="form-group"><label>Receipt Photo</label><input id="tk-receipt" type="file" accept="image/*" style="color:var(--text);"></div>';
+      } else if (type === "equipment") {
+        f.innerHTML =
+          '<div class="form-group"><label>Item Requested</label><input id="tk-item" type="text" placeholder="e.g. Extension cord, batteries"></div>' +
+          '<div class="form-group"><label>Quantity</label><input id="tk-qty" type="number" min="1" value="1"></div>' +
+          '<div class="form-group"><label>Urgency</label><select id="tk-urgency"><option value="normal">Normal</option><option value="urgent">Urgent</option></select></div>';
+      } else if (type === "tech") {
+        f.innerHTML =
+          '<div class="form-group"><label>Urgency</label><select id="tk-urgency"><option value="normal">Normal</option><option value="urgent">Urgent</option></select></div>';
+      } else {
+        f.innerHTML = "";
+      }
+    };
+
+    async function confirmNewTicket() {
+      const type    = document.getElementById("tk-type")?.value;
+      const subject = document.getElementById("tk-subject")?.value.trim();
+      const details = document.getElementById("tk-details")?.value.trim();
+      if (!subject) { alert("Please enter a subject."); return; }
+
+      const ticketData = {
+        type, subject, details,
+        status: "open",
+        submittedById:   currentUser.uid,
+        submittedByName: currentUser.displayName || currentUser.email,
+        submittedByUnit: currentUserUnit || "",
+        createdAt: serverTimestamp()
+      };
+
+      if (type === "reimbursement") {
+        ticketData.amount = parseFloat(document.getElementById("tk-amount")?.value) || 0;
+        ticketData.reason = document.getElementById("tk-reason")?.value.trim() || "";
+        const file = document.getElementById("tk-receipt")?.files[0];
+        if (file) {
+          try {
+            const storageRef = ref(storage, "receipts/" + currentUser.uid + "_" + Date.now() + "_" + file.name);
+            const snap = await uploadBytes(storageRef, file);
+            ticketData.receiptUrl = await getDownloadURL(snap.ref);
+          } catch(e) { console.warn("Receipt upload failed:", e.message); }
+        }
+      } else if (type === "equipment") {
+        ticketData.itemRequested = document.getElementById("tk-item")?.value.trim() || "";
+        ticketData.quantity      = parseInt(document.getElementById("tk-qty")?.value) || 1;
+        ticketData.urgency       = document.getElementById("tk-urgency")?.value || "normal";
+      } else if (type === "tech") {
+        ticketData.urgency = document.getElementById("tk-urgency")?.value || "normal";
+      }
+
+      const ref2 = await addDoc(collection(db,"tickets"), ticketData);
+      await addLog({ action:"TICKET_SUBMITTED", equipmentName: subject, userId:currentUser.uid, userName:currentUser.displayName||currentUser.email });
+
+      // Notify coordinators via Firestore (FCM server-side would read this)
+      await addDoc(collection(db,"notifications"), {
+        type: "new_ticket", ticketId: ref2.id, ticketType: type, subject,
+        submittedByName: ticketData.submittedByName,
+        createdAt: serverTimestamp(), read: false, targetRole: "admin"
+      });
+
+      closeModal();
+      showToast("Ticket submitted!");
+      switchTab("tickets", document.querySelector('[data-tab="tickets"]'));
+    }
+
+    window.resolveTicket = async function(id, status) {
+      const modal = document.getElementById("modal");
+      document.getElementById("modal-title").textContent = status === "approved" ? "Approve Ticket" : status === "denied" ? "Deny Ticket" : "Close Ticket";
+      document.getElementById("modal-body").innerHTML =
+        '<div class="form-group"><label>Note (optional)</label>' +
+        '<textarea id="tk-note" rows="3" style="width:100%;resize:vertical;font-family:\'Barlow\',sans-serif;font-size:.88rem;padding:10px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:7px;color:var(--text);" placeholder="Add a note for the member..."></textarea></div>';
+      document.getElementById("modal-confirm").textContent = status === "approved" ? "Approve" : status === "denied" ? "Deny" : "Close";
+      document.getElementById("modal-confirm").style.display = "";
+      document.getElementById("modal-confirm").onclick = async () => {
+        const note = document.getElementById("tk-note")?.value.trim() || "";
+        await updateDoc(doc(db,"tickets",id), { status, coordinatorNote: note||null, resolvedAt: serverTimestamp(), resolvedBy: currentUser.displayName||currentUser.email });
+        closeModal();
+        showToast("Ticket " + status + ".");
+      };
+      modal.style.display = "flex";
+    };
+
+    window.viewTicket = async function(id) {
+      const snap = await getDoc(doc(db,"tickets",id));
+      const t = snap.data(); if (!t) return;
+      const type = TICKET_TYPES[t.type] || TICKET_TYPES.other;
+      const date = t.createdAt?.toDate ? t.createdAt.toDate().toLocaleString() : "—";
+      const modal = document.getElementById("modal");
+      document.getElementById("modal-title").textContent = type.label;
+      let body = `
+        <div style="font-size:.82rem;color:var(--muted);margin-bottom:12px;">${t.submittedByName||"Unknown"}${t.submittedByUnit?" &bull; "+t.submittedByUnit:""} &bull; ${date}</div>
+        <div style="font-weight:700;color:var(--text);margin-bottom:8px;">${t.subject||""}</div>
+        ${t.details ? `<div style="font-size:.85rem;color:var(--muted);margin-bottom:12px;">${t.details}</div>` : ""}`;
+      if (t.type === "reimbursement") {
+        body += `<div style="margin-bottom:8px;">`;
+        if (t.amount)  body += `<div><strong>Amount:</strong> $${parseFloat(t.amount).toFixed(2)}</div>`;
+        if (t.reason)  body += `<div><strong>Reason:</strong> ${t.reason}</div>`;
+        if (t.receiptUrl) body += `<div style="margin-top:10px;"><a href="${t.receiptUrl}" target="_blank"><img src="${t.receiptUrl}" style="max-width:100%;border-radius:8px;border:1px solid var(--border);"></a></div>`;
+        body += `</div>`;
+      } else if (t.type === "equipment") {
+        if (t.itemRequested) body += `<div><strong>Item:</strong> ${t.itemRequested} (qty: ${t.quantity||1})</div>`;
+        if (t.urgency) body += `<div><strong>Urgency:</strong> ${t.urgency}</div>`;
+      }
+      if (t.coordinatorNote) body += `<div style="margin-top:12px;padding:10px;background:var(--surface2);border-radius:8px;border-left:3px solid var(--sky);font-size:.82rem;"><strong>Coordinator note:</strong> ${t.coordinatorNote}</div>`;
+      document.getElementById("modal-body").innerHTML = body;
+      document.getElementById("modal-confirm").style.display = "none";
+      modal.style.display = "flex";
+    };
+
+    // ── NOTIFICATION BELL ─────────────────────────────────────────
+    window.loadNotifications = async function() {
+      if (!currentUser) return;
+      const snap = await getDocs(collection(db,"notifications"));
+      let unread = 0;
+      snap.forEach(d => {
+        const n = d.data();
+        if (n.targetRole === currentRole && !n.read) unread++;
+      });
+      const bell = document.getElementById("notif-bell-badge");
+      if (bell) { bell.textContent = unread; bell.style.display = unread ? "" : "none"; }
+    };
     window._allIssuedGear = [];
     window._issuedFilter  = "out";
 
@@ -3316,6 +3615,7 @@
     .sum-missing   {font-size:.72rem;color:var(--orange);font-weight:700;background:rgba(232,112,64,.15);padding:3px 8px;border-radius:20px;}
     .btn-missing   {background:rgba(232,112,64,.15);color:var(--orange);}
     .broken-note{font-size:.78rem;color:var(--red);margin-bottom:8px;}
+    .ticket-type-pill{font-size:.68rem;font-weight:700;padding:2px 8px;border-radius:10px;}
     .call-notes{font-size:.78rem;color:var(--muted);margin:4px 0 6px;padding:6px 10px;background:var(--surface2);border-radius:6px;border-left:3px solid var(--border);}
     .kit-contents{font-size:.78rem;color:var(--text);background:var(--surface2);border-radius:6px;padding:8px 10px;margin:6px 0;line-height:1.5;}
     .kit-contents strong{color:var(--sky);display:block;margin-bottom:4px;}
@@ -3591,6 +3891,10 @@
       <div class="name" id="user-name"></div>
       <div class="role" id="user-role"></div>
     </div>
+    <button onclick="switchTab('tickets',document.querySelector('[data-tab=tickets]'))" style="position:relative;background:none;border:none;color:var(--muted);font-size:1.3rem;cursor:pointer;padding:4px 8px;" title="Tickets">
+      &#127981;
+      <span id="ticket-badge" style="display:none;position:absolute;top:0;right:0;background:var(--red);color:#fff;font-size:.6rem;font-weight:700;border-radius:50%;width:16px;height:16px;line-height:16px;text-align:center;"></span>
+    </button>
     <button class="logout-btn" onclick="logout()">Sign Out</button>
   </div>
 
@@ -3599,6 +3903,7 @@
     <div class="tab"        data-tab="checkin"   onclick="switchTab('checkin',this)">&#128228; Check In</div>
     <div class="tab admin-only dispatcher-visible" data-tab="inventory" onclick="switchTab('inventory',this)">&#128230; Inventory</div>
     <div class="tab"            data-tab="mycalls"   onclick="switchTab('mycalls',this)">&#128203; Call Log</div>
+    <div class="tab"            data-tab="tickets"   onclick="switchTab('tickets',this)">&#127981; Tickets</div>
     <div class="tab admin-only" data-tab="log"      onclick="switchTab('log',this)">&#128203; Activity Log</div>
     <div class="tab admin-only" data-tab="reports"  onclick="switchTab('reports',this)">&#128196; Reports</div>
     <div class="tab admin-only" data-tab="issued"   onclick="switchTab('issued',this)">&#128295; Issued Equipment</div>
@@ -3666,6 +3971,20 @@
     <div id="inventory-list"></div>
   </div>
 
+  <!-- TICKETS -->
+  <div id="tab-tickets" class="tab-content">
+    <div class="toolbar" style="display:flex;flex-direction:column;gap:8px;">
+      <button class="tbtn tbtn-primary" onclick="showNewTicket()" style="width:100%">+ New Ticket</button>
+      <div style="display:flex;gap:6px;">
+        <button class="user-filter-btn active" onclick="setTicketFilter('all',this)">All</button>
+        <button class="user-filter-btn" onclick="setTicketFilter('open',this)">Open</button>
+        <button class="user-filter-btn" onclick="setTicketFilter('pending',this)">Pending</button>
+        <button class="user-filter-btn" onclick="setTicketFilter('closed',this)">Closed</button>
+      </div>
+    </div>
+    <div id="tickets-list"></div>
+  </div>
+
   <!-- ISSUED EQUIPMENT -->
   <div id="tab-issued" class="tab-content">
     <div class="toolbar" style="display:flex;flex-direction:column;gap:8px;">
@@ -3702,6 +4021,8 @@
         </label>
       </div>
       <div id="import-status" style="font-size:.78rem;color:var(--muted);display:none;"></div>
+      <button class="tbtn tbtn-muted" onclick="provisionAllAccounts()" style="width:100%;border-color:var(--sky);color:var(--sky);">&#9889; Provision Missing Auth Accounts</button>
+      <div id="provision-status" style="font-size:.78rem;color:var(--muted);display:none;"></div>
     </div>
     <div id="users-list"></div>
   </div>
@@ -3856,7 +4177,7 @@
     if(el) el.classList.add("active");
     document.getElementById("tab-"+name).classList.add("active");
     if (name === "users"   && window.loadUsers)      window.loadUsers();
-    if (name === "issued"  && window.loadIssuedGear)  window.loadIssuedGear();
+    if (name === "tickets" && window.loadTickets)   window.loadTickets();
     if (name === "log"     && window.reloadLog)       window.reloadLog();
     if (name === "mycalls" && window.reloadMyCalls)   window.reloadMyCalls();
   }
