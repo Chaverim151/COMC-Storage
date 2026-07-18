@@ -44,12 +44,13 @@
     import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged,
              sendPasswordResetEmail, createUserWithEmailAndPassword, updateProfile }
       from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
-    import { getMessaging, getToken, onMessage }
-      from "https://www.gstatic.com/firebasejs/10.12.0/firebase-messaging.js";
-    import { getStorage, ref, uploadBytes, getDownloadURL }
-      from "https://www.gstatic.com/firebasejs/10.12.0/firebase-storage.js";
+    import { getFirestore, collection, doc, getDocs, getDoc, addDoc, updateDoc,
              deleteDoc, onSnapshot, serverTimestamp, query, orderBy, setDoc, writeBatch }
       from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+    import { getMessaging, getToken, onMessage }
+      from "https://www.gstatic.com/firebasejs/10.12.0/firebase-messaging.js";
+    import { getStorage, ref as storageRef, uploadBytes, getDownloadURL }
+      from "https://www.gstatic.com/firebasejs/10.12.0/firebase-storage.js";
 
     // ── FIREBASE CONFIG ──────────────────────────────────────────
     const firebaseConfig = {
@@ -2823,8 +2824,8 @@
         const file = document.getElementById("tk-receipt")?.files[0];
         if (file) {
           try {
-            const storageRef = ref(storage, "receipts/" + currentUser.uid + "_" + Date.now() + "_" + file.name);
-            const snap = await uploadBytes(storageRef, file);
+            const fileRef = storageRef(storage, "receipts/" + currentUser.uid + "_" + Date.now() + "_" + file.name);
+            const snap = await uploadBytes(fileRef, file);
             ticketData.receiptUrl = await getDownloadURL(snap.ref);
           } catch(e) { console.warn("Receipt upload failed:", e.message); }
         }
@@ -2836,12 +2837,12 @@
         ticketData.urgency = document.getElementById("tk-urgency")?.value || "normal";
       }
 
-      const ref2 = await addDoc(collection(db,"tickets"), ticketData);
+      const ticketRef = await addDoc(collection(db,"tickets"), ticketData);
       await addLog({ action:"TICKET_SUBMITTED", equipmentName: subject, userId:currentUser.uid, userName:currentUser.displayName||currentUser.email });
 
       // Notify coordinators via Firestore (FCM server-side would read this)
       await addDoc(collection(db,"notifications"), {
-        type: "new_ticket", ticketId: ref2.id, ticketType: type, subject,
+        type: "new_ticket", ticketId: ticketRef.id, ticketType: type, subject,
         submittedByName: ticketData.submittedByName,
         createdAt: serverTimestamp(), read: false, targetRole: "admin"
       });
