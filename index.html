@@ -201,16 +201,13 @@
         const swReg = await navigator.serviceWorker.register("/firebase-messaging-sw.js");
         const token = await getToken(messaging, { vapidKey: VAPID_KEY, serviceWorkerRegistration: swReg });
         if (token && currentUser) {
-          // Store as array of tokens (one per device) to support multiple devices
-          const userSnap = await getDoc(doc(db,"users",currentUser.uid));
-          const existing = userSnap.data()?.fcmTokens || [];
-          if (!existing.includes(token)) {
-            await updateDoc(doc(db,"users",currentUser.uid), {
-              fcmTokens: [...existing, token],
-              fcmToken: token, // keep single field for backwards compat
-              fcmUpdatedAt: serverTimestamp()
-            });
-          }
+          // Always overwrite with single token array AND remove legacy fcmToken field
+          const { deleteField } = await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js");
+          await updateDoc(doc(db,"users",currentUser.uid), {
+            fcmTokens: [token],
+            fcmToken: deleteField(),
+            fcmUpdatedAt: serverTimestamp()
+          });
           console.log("FCM token registered");
         }
         onMessage(messaging, payload => {
@@ -2909,12 +2906,12 @@
         coordSnap.forEach(d => {
           const u = d.data();
           if (u.role === "admin") {
-            // Use fcmTokens array if available, fall back to single fcmToken
-            const tokens = u.fcmTokens || (u.fcmToken ? [u.fcmToken] : []);
-            tokens.forEach(t => tokenSet.add(t));
+            (u.fcmTokens || []).forEach(t => tokenSet.add(t));
+            // Do NOT fall back to u.fcmToken — we clean it up on login
           }
         });
         const tokens = [...tokenSet];
+        console.log("Sending push to", tokens.length, "unique token(s)");
         if (tokens.length) {
           await fetch("https://comc-sms.shmueleidelman-work.workers.dev", {
             method: "POST",
