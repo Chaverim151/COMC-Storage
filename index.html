@@ -245,6 +245,16 @@
       loadMyCalls();
       window.loadTickets();
       registerPushNotifications();
+      // Check profile completeness
+      getDoc(doc(db,"users",currentUser.uid)).then(snap => {
+        const d = snap.data() || {};
+        const banner = document.getElementById("profile-banner");
+        if (banner && (!d.email || !d.phone)) {
+          banner.style.display = "flex";
+        } else if (banner) {
+          banner.style.display = "none";
+        }
+      });
       if (currentRole==="admin") {
         loadLog();
         window.loadUsers();
@@ -2366,6 +2376,7 @@
         <div class="form-group"><label>Unit Number</label>
           <input id="u-unit" type="text" placeholder="e.g. MC-412, MCD-3, MCA-1"></div>
         <div class="form-group"><label>Email (for password reset)</label><input id="u-email" type="email" placeholder="user@example.com"></div>
+        <div class="form-group"><label>Phone (for SMS notifications)</label><input id="u-phone" type="tel" placeholder="e.g. 732-555-5555"></div>
         <div class="form-group"><label>Role</label>
           <select id="u-role">
             <option value="member">Responder</option>
@@ -2388,7 +2399,8 @@
       const unit=document.getElementById("u-unit").value.trim();
       const email=document.getElementById("u-email").value.trim();
       const roleVal=document.getElementById("u-role").value;
-      const role = roleVal; // save role directly: member, dispatcher, or admin
+      const role = roleVal;
+      const phone=document.getElementById("u-phone")?.value.trim()||"";
       const err=document.getElementById("u-error"); err.textContent="";
       if (!name||!unit||!email){err.textContent="All fields required.";return;}
       const allUsers=await getDocs(collection(db,"users"));
@@ -2398,7 +2410,7 @@
       try {
         const cred=await createUserWithEmailAndPassword(secondaryAuth,email,"Chaverim1!");
         await updateProfile(cred.user,{displayName:name});
-        await setDoc(doc(db,"users",cred.user.uid),{displayName:name,unitNumber:unit,email,role,createdAt:serverTimestamp(),createdBy:currentUser.displayName||currentUser.email});
+        await setDoc(doc(db,"users",cred.user.uid),{displayName:name,unitNumber:unit,email,role,phone,createdAt:serverTimestamp(),createdBy:currentUser.displayName||currentUser.email});
         await sendPasswordResetEmail(secondaryAuth,email);
         await signOut(secondaryAuth);
         await addLog({action:"USER_ADDED",equipmentName:name+" ("+unit+") as "+roleVal,userId:currentUser.uid,userName:currentUser.displayName||currentUser.email});
@@ -2418,6 +2430,7 @@
         <div class="form-group"><label>Unit Number</label>
           <input id="u-unit" type="text" value="${d.unitNumber||''}" placeholder="e.g. MC-412, MCD-3, MCA-1"></div>
         <div class="form-group"><label>Email</label><input id="u-email" type="email" value="${d.email||''}"></div>
+        <div class="form-group"><label>Phone (for SMS notifications)</label><input id="u-phone" type="tel" value="${d.phone||''}" placeholder="e.g. 732-555-5555"></div>
         <div class="form-group"><label>Role</label>
           <select id="u-role">
             <option value="member"     ${d.role==="member"    ?"selected":""}>Responder</option>
@@ -2438,8 +2451,9 @@
       const unit=document.getElementById("u-unit").value.trim();
       const email=document.getElementById("u-email").value.trim();
       const role=document.getElementById("u-role").value;
+      const phone=document.getElementById("u-phone")?.value.trim()||"";
       if(!name||!unit){alert("Name and unit required.");return;}
-      await updateDoc(doc(db,"users",uid),{displayName:name,unitNumber:unit,email,role});
+      await updateDoc(doc(db,"users",uid),{displayName:name,unitNumber:unit,email,role,phone});
       closeModal(); window.loadUsers(); showToast("User updated!");
     }
 
@@ -2723,6 +2737,40 @@
       unsubs.push(u);
     }
 
+    window.showMyAccount = async function() {
+      const snap = await getDoc(doc(db,"users",currentUser.uid));
+      const d = snap.data() || {};
+      const modal = document.getElementById("modal");
+      document.getElementById("modal-title").textContent = "My Account";
+      document.getElementById("modal-body").innerHTML = `
+        <div class="form-group"><label>Name</label>
+          <input type="text" value="${(d.displayName||"").replace(/"/g,"&quot;")}" disabled style="opacity:.6;cursor:not-allowed;background:var(--surface2);"></div>
+        <div class="form-group"><label>Unit</label>
+          <input type="text" value="${(d.unitNumber||"").replace(/"/g,"&quot;")}" disabled style="opacity:.6;cursor:not-allowed;background:var(--surface2);"></div>
+        <div class="form-group"><label>Email</label>
+          <input id="ma-email" type="email" value="${(d.email||"").replace(/"/g,"&quot;")}"></div>
+        <div class="form-group"><label>Phone</label>
+          <input id="ma-phone" type="tel" value="${(d.phone||"").replace(/"/g,"&quot;")}" placeholder="e.g. 732-555-5555"></div>
+        <div id="ma-status" style="font-size:.78rem;color:var(--muted);min-height:1.2em;"></div>
+      `;
+      document.getElementById("modal-confirm").textContent = "Save";
+      document.getElementById("modal-confirm").style.display = "";
+      document.getElementById("modal-confirm").onclick = async () => {
+        const email = document.getElementById("ma-email")?.value.trim();
+        const phone = document.getElementById("ma-phone")?.value.trim() || "";
+        const statusEl = document.getElementById("ma-status");
+        if (!email) { statusEl.textContent = "Email is required."; statusEl.style.color="var(--red)"; return; }
+        try {
+          await updateDoc(doc(db,"users",currentUser.uid), { email, phone });
+          const banner = document.getElementById("profile-banner");
+          if (banner && email && phone) banner.style.display = "none";
+          statusEl.textContent = "✓ Saved!"; statusEl.style.color="var(--green)";
+          setTimeout(() => closeModal(), 800);
+        } catch(e) { statusEl.textContent = "Error: " + e.message; statusEl.style.color="var(--red)"; }
+      };
+      modal.style.display = "flex";
+    };
+
     // ── TICKET SYSTEM ─────────────────────────────────────────────
     window._ticketFilter = "open";
     window._allTickets   = [];
@@ -2897,33 +2945,28 @@
         createdAt: serverTimestamp(), read: false, targetRole: "admin"
       });
 
-      // Send FCM push to all coordinators who have a token
+      // SMS all coordinators with a phone number on file
       try {
         const coordSnap = await getDocs(collection(db,"users"));
-        const tokenSet = new Set();
+        const smsPromises = [];
         coordSnap.forEach(d => {
           const u = d.data();
-          if (u.role === "admin") {
-            (u.fcmTokens || []).forEach(t => tokenSet.add(t));
-            // Do NOT fall back to u.fcmToken — we clean it up on login
+          console.log("User:", u.displayName, "role:", u.role, "phone:", u.phone);
+          if (u.role === "admin" && u.phone) {
+            const msg = "COMC Storage: A New " + (TICKET_TYPES[type]?.label.replace(/^[^\s]+\s/,"") || type) + " Ticket Has Been Created by " + (ticketData.submittedByName||"a member") + ". Subject: " + subject;
+            console.log("Sending SMS to", u.phone);
+            smsPromises.push(
+              fetch("https://comc-sms.shmueleidelman-work.workers.dev", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ to: u.phone, message: msg })
+              }).then(r => r.json()).then(r => console.log("SMS result:", r))
+            );
           }
         });
-        const tokens = [...tokenSet];
-        console.log("Sending push to", tokens.length, "unique token(s)");
-        if (tokens.length) {
-          await fetch("https://comc-sms.shmueleidelman-work.workers.dev", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              action: "push",
-              tokens,
-              title: "COMC Storage",
-              body: "A New " + (TICKET_TYPES[type]?.label.replace(/^[^\s]+\s/,"") || type) + " Ticket Has Been Created" + (ticketData.submittedByName ? " by " + ticketData.submittedByName : ""),
-              data: { ticketId: ticketRef.id, type }
-            })
-          });
-        }
-      } catch(e) { console.warn("Push notify failed:", e.message); }
+        console.log("Total SMS to send:", smsPromises.length);
+        await Promise.all(smsPromises);
+      } catch(e) { console.warn("SMS notify failed:", e.message); }
 
       closeModal();
       showToast("Ticket submitted!");
@@ -3981,6 +4024,7 @@
       &#127981;
       <span id="ticket-badge" style="display:none;position:absolute;top:0;right:0;background:var(--red);color:#fff;font-size:.6rem;font-weight:700;border-radius:50%;width:16px;height:16px;line-height:16px;text-align:center;"></span>
     </button>
+    <button onclick="showMyAccount()" style="background:none;border:1px solid var(--border);color:var(--muted);font-size:.72rem;cursor:pointer;padding:5px 10px;border-radius:6px;font-family:'Barlow',sans-serif;white-space:nowrap;" title="My Account">My Account</button>
     <button class="logout-btn" onclick="logout()">Sign Out</button>
   </div>
 
@@ -3997,6 +4041,12 @@
   </div>
 
   <!-- CHECK OUT -->
+  <!-- PROFILE COMPLETION BANNER -->
+  <div id="profile-banner" style="display:none;background:rgba(255,189,0,.12);border-bottom:2px solid var(--yellow);padding:10px 16px;display:flex;align-items:center;justify-content:space-between;gap:12px;">
+    <span style="font-size:.82rem;color:var(--yellow);">&#9888; Your profile is incomplete — please add your email and phone number.</span>
+    <button onclick="showMyAccount()" style="background:var(--yellow);color:#1a2a35;border:none;border-radius:6px;padding:5px 12px;font-size:.78rem;font-weight:700;cursor:pointer;font-family:'Barlow',sans-serif;white-space:nowrap;">Complete Profile</button>
+  </div>
+
   <div id="tab-checkout" class="tab-content active">
     <div class="co-form">
       <h3>&#128222; Call Details</h3>
