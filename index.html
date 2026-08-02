@@ -332,16 +332,15 @@
           let category;
           if (l.includes("heater"))        category = "Heaters";
           else if (l.includes("ac") || l.includes("air cond") || l.includes("window unit")) {
-            // Extract BTU — look for patterns like "6k", "6000", "9k btu", "10k btu", "12000 btu"
             const btuMatch = l.match(/(\d+\.?\d*)\s*k\s*b?t?u?/) || l.match(/(\d{4,6})\s*b?t?u?/);
+            let btuLabel = "";
             if (btuMatch) {
               let btu = parseFloat(btuMatch[1]);
-              if (btu < 1000) btu = btu * 1000; // convert "6k" → 6000
-              const btuLabel = btu >= 1000 ? (btu/1000).toFixed(0) + "K BTU" : btu + " BTU";
-              category = "AC Units — " + btuLabel;
-            } else {
-              category = "AC Units";
+              if (btu < 1000) btu = btu * 1000;
+              btuLabel = " — " + (btu/1000).toFixed(0) + "K BTU";
             }
+            const typeLabel = d.acType ? " (" + d.acType + ")" : "";
+            category = "AC Units" + btuLabel + typeLabel;
           }
           else if (l.includes("fan"))      category = "Fans";
           else if (l.includes("ez spare")) category = "EZ Spares";
@@ -1490,7 +1489,13 @@
           </select>
         </div>
         <div class="form-group"><label>Name</label>
-          <input id="m-name" type="text" placeholder="e.g. Large Heater" oninput="previewId()"></div>
+          <input id="m-name" type="text" placeholder="e.g. Large Heater" oninput="previewId();onEquipNameChange()"></div>
+        <div class="form-group" id="m-actype-group" style="display:none;"><label>AC Unit Type</label>
+          <select id="m-actype">
+            <option value="">— Select type —</option>
+            <option value="Window">Window</option>
+            <option value="Portable">Portable</option>
+          </select></div>
         <div class="form-group"><label>Equipment ID</label>
           <input id="m-eqid" type="text" placeholder="Auto-generated"></div>
         <div class="form-group"><label>Manufacturer</label>
@@ -1519,6 +1524,12 @@
       document.getElementById("modal-confirm").style.display = "";
       document.getElementById("modal-confirm").onclick = confirmAddUnit;
       modal.style.display = "flex";
+    };
+
+    window.onEquipNameChange = function() {
+      const name = (document.getElementById("m-name")?.value || "").toLowerCase();
+      const group = document.getElementById("m-actype-group");
+      if (group) group.style.display = (name.includes("ac") || name.includes("air cond") || name.includes("window unit")) ? "" : "none";
     };
 
     window.onImportEquipment = function() {
@@ -1632,6 +1643,7 @@
       const purchase     = document.getElementById("m-purchase")?.value.trim() || "";
       const reorder      = document.getElementById("m-reorder")?.value.trim() || "";
       const reminderDays = parseInt(document.getElementById("m-reminder")?.value) || 0;
+      const acType       = document.getElementById("m-actype")?.value || "";
       const kitComponents = (window._kitComponents || []).filter(c => c.name.trim());
       if (!name || !eqId) { alert("Name and ID required."); return; }
       if (Object.values(equipmentMap).some(d=>d.eqId===eqId)) { alert(eqId+" already in use."); return; }
@@ -1639,7 +1651,7 @@
         name, eqId, status:"available",
         manufacturer, modelNumber, replacementValue: value,
         placeOfPurchase: purchase, reorderLink: reorder,
-        reminderDays, kitComponents,
+        reminderDays, kitComponents, acType,
         createdAt: serverTimestamp()
       });
       await addLog({ action:"ADDED", equipmentName:name+" ("+eqId+")", userId:currentUser.uid, userName:currentUser.displayName||currentUser.email });
@@ -1725,6 +1737,13 @@
           <input id="m-reorder" type="url" value="${d.reorderLink||""}" placeholder="https://..."></div>
         <div class="form-group"><label>Return Reminder (days, 0 = off)</label>
           <input id="m-reminder" type="number" value="${d.reminderDays||7}" min="0"></div>
+        ${(d.name||"").toLowerCase().includes("ac") || (d.name||"").toLowerCase().includes("air cond") ? `
+        <div class="form-group"><label>AC Unit Type</label>
+          <select id="m-actype">
+            <option value="">— Select type —</option>
+            <option value="Window" ${d.acType==="Window"?"selected":""}>Window</option>
+            <option value="Portable" ${d.acType==="Portable"?"selected":""}>Portable</option>
+          </select></div>` : '<input id="m-actype" type="hidden" value="">'}
         <div class="form-group"><label>Kit Components (optional)</label>
           <div id="kit-components-list"></div>
           <button type="button" class="tbtn tbtn-muted" style="width:100%;margin-top:6px;" onclick="addKitComponentRow()">+ Add Component</button>
@@ -1751,13 +1770,14 @@
       const purchase     = document.getElementById("m-purchase")?.value.trim() || "";
       const reorder      = document.getElementById("m-reorder")?.value.trim() || "";
       const reminderDays = parseInt(document.getElementById("m-reminder")?.value) || 0;
+      const acType       = document.getElementById("m-actype")?.value || "";
       const kitComponents = (window._kitComponents || []).filter(c => c.name.trim());
       if (!name) { alert("Name required."); return; }
       await updateDoc(doc(db,"equipment",id), {
         name, eqId, status,
         manufacturer, modelNumber, replacementValue: value,
         placeOfPurchase: purchase, reorderLink: reorder,
-        reminderDays, kitComponents
+        reminderDays, kitComponents, acType
       });
       await addLog({ action:"EDITED", equipmentName:name+" ("+eqId+")", userId:currentUser.uid, userName:currentUser.displayName||currentUser.email });
       closeModal();
@@ -2923,9 +2943,12 @@
         if (file) {
           try {
             const fileRef = storageRef(storage, "receipts/" + currentUser.uid + "_" + Date.now() + "_" + file.name);
-            const snap = await uploadBytes(fileRef, file);
-            ticketData.receiptUrl = await getDownloadURL(snap.ref);
-          } catch(e) { console.warn("Receipt upload failed:", e.message); }
+            const uploadSnap = await uploadBytes(fileRef, file);
+            ticketData.receiptUrl = await getDownloadURL(uploadSnap.ref);
+          } catch(e) {
+            console.warn("Receipt upload failed (CORS or permission issue):", e.message);
+            // Continue without receipt — don't block ticket submission
+          }
         }
       } else if (type === "equipment") {
         ticketData.itemRequested = document.getElementById("tk-item")?.value.trim() || "";
