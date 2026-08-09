@@ -343,12 +343,18 @@
             category = "AC Units" + btuLabel + typeLabel;
           }
           else if (l.includes("fan"))      category = "Fans";
+          else if (l.includes("tire"))     {
+            // Extract tire size e.g. "225/65R17", "P265/70R16", "31x10.5R15"
+            const sizeMatch = d.name.match(/[Pp]?\d{2,3}[xX\/]\d{2}\.?\d*[Rr]?\d{2}/);
+            category = "Tires" + (sizeMatch ? " — " + sizeMatch[0] : "");
+          }
           else if (l.includes("ez spare")) category = "EZ Spares";
           else if (l.includes("spare"))    category = "Spares";
           else category = d.name; // use actual equipment name
 
-          if (!summary[category]) summary[category] = { total:0, available:0, out:0, broken:0, missing:0 };
+        if (!summary[category]) summary[category] = { total:0, available:0, out:0, broken:0, missing:0, items:[] };
           summary[category].total++;
+          summary[category].items.push({ name: d.name, eqId: d.eqId, status: d.status });
           if (d.status==="available")    summary[category].available++;
           else if (d.status==="out")     summary[category].out++;
           else if (d.status==="broken")  summary[category].broken++;
@@ -360,7 +366,7 @@
 
         // Separate AC subcategories from others
         const acEntries = Object.entries(summary).filter(([cat]) => cat.startsWith("AC Units"));
-        const otherEntries = Object.entries(summary).filter(([cat]) => !cat.startsWith("AC Units"));
+        const otherEntries = Object.entries(summary).filter(([cat]) => !cat.startsWith("AC Units") && !cat.startsWith("EZ Spares"));
 
         // Compute AC totals
         const acTotals = { total:0, available:0, out:0, broken:0, missing:0 };
@@ -378,28 +384,118 @@
           return ai - bi;
         });
 
-        const renderRow = ([cat, s], indent) => `
-          <div class="summary-row${indent?" summary-row-indent":""}">
-            <div class="summary-name">${indent ? "&#8627; "+cat.replace("AC Units — ","") : cat}</div>
-            <div class="summary-stats">
-              <span class="sum-avail">&#10003; ${s.available} avail</span>
-              ${s.out     ? `<span class="sum-out">&#8599; ${s.out} out</span>` : ""}
-              ${s.broken  ? `<span class="sum-broken">&#128683; ${s.broken} broken</span>` : ""}
-              ${s.missing ? `<span class="sum-missing">&#10067; ${s.missing} missing</span>` : ""}
-              <span class="sum-total">${s.total} total</span>
-            </div>
-          </div>`;
+        const renderRow = ([cat, s], indent, expandable, parentId) => {
+          const id = "sum-expand-" + cat.replace(/[^a-z0-9]/gi,"_");
+          const itemRows = expandable && s.items ? s.items.sort((a,b)=>(a.eqId||"").localeCompare(b.eqId||"",undefined,{numeric:true})).map(i => {
+            const sc = i.status==="available"?"sum-avail":i.status==="out"?"sum-out":i.status==="broken"?"sum-broken":"sum-missing";
+            const label = i.name + (i.eqId ? " (" + i.eqId + ")" : "");
+            return `<div class="summary-row summary-row-indent" style="padding-left:28px;">
+              <div class="summary-name" style="font-size:.75rem;">${label}</div>
+              <div class="summary-stats"><span class="${sc}">${i.status}</span></div>
+            </div>`;
+          }).join("") : "";
 
+          const label = indent
+            ? "\u21B3 " + cat.replace(/^AC Units — /,"").replace(/^EZ Spares — /,"").replace(/^Tires — /,"")
+            : cat;
+          const clickAttr = parentId
+            ? `onclick="var el=document.getElementById('${id}');el.style.display=el.style.display==='none'?'':'none'" style="cursor:pointer;"`
+            : "";
+
+          return `
+            <div class="summary-row${indent?" summary-row-indent":""}" ${clickAttr}>
+              <div class="summary-name">${label}${parentId?" &#9660;":""}</div>
+              <div class="summary-stats">
+                <span class="sum-avail">&#10003; ${s.available} avail</span>
+                ${s.out     ? `<span class="sum-out">&#8599; ${s.out} out</span>` : ""}
+                ${s.broken  ? `<span class="sum-broken">&#128683; ${s.broken} broken</span>` : ""}
+                ${s.missing ? `<span class="sum-missing">&#10067; ${s.missing} missing</span>` : ""}
+                <span class="sum-total">${s.total} total</span>
+              </div>
+            </div>
+            ${parentId && itemRows ? `<div id="${id}" style="display:none;">${itemRows}</div>` : ""}`;
+        };
+
+        // AC: parent row expandable to show BTU subcategories
+        const acParentId = "sum-expand-AC_Units";
         let summaryRows = "";
-        // AC parent row + nested BTU rows
         if (acEntries.length) {
-          summaryRows += renderRow(["AC Units", acTotals], false);
-          if (acEntries.length > 1 || acEntries[0][0] !== "AC Units") {
-            acEntries.forEach(e => { summaryRows += renderRow(e, true); });
-          }
+          summaryRows += `
+            <div class="summary-row" onclick="var el=document.getElementById('${acParentId}');el.style.display=el.style.display==='none'?'':'none'" style="cursor:pointer;">
+              <div class="summary-name">AC Units &#9660;</div>
+              <div class="summary-stats">
+                <span class="sum-avail">&#10003; ${acTotals.available} avail</span>
+                ${acTotals.out     ? `<span class="sum-out">&#8599; ${acTotals.out} out</span>` : ""}
+                ${acTotals.broken  ? `<span class="sum-broken">&#128683; ${acTotals.broken} broken</span>` : ""}
+                ${acTotals.missing ? `<span class="sum-missing">&#10067; ${acTotals.missing} missing</span>` : ""}
+                <span class="sum-total">${acTotals.total} total</span>
+              </div>
+            </div>
+            <div id="${acParentId}" style="display:none;">
+              ${acEntries.map(e => renderRow(e, true, false, null)).join("")}
+            </div>`;
         }
-        // Other categories
-        otherEntries.forEach(e => { summaryRows += renderRow(e, false); });
+
+        // EZ Spares: parent expandable to show individual items
+        const ezSpareEntries = Object.entries(summary).filter(([cat]) => cat.startsWith("EZ Spares") || cat === "EZ Spares");
+        const ezTotals = { total:0, available:0, out:0, broken:0, missing:0, items:[] };
+        ezSpareEntries.forEach(([,s]) => {
+          ezTotals.total+=s.total; ezTotals.available+=s.available;
+          ezTotals.out+=s.out; ezTotals.broken+=s.broken; ezTotals.missing+=s.missing;
+          ezTotals.items.push(...(s.items||[]));
+        });
+        if (ezSpareEntries.length) {
+          summaryRows += renderRow(["EZ Spares", ezTotals], false, true, "ez_spares_parent");
+        }
+
+        // Tires: group by size, parent expandable to show sizes, each size expandable
+        const tireEntries = Object.entries(summary).filter(([cat]) => cat === "Tires" || cat.startsWith("Tires — "));
+        if (tireEntries.length) {
+          const tireTotals = { total:0, available:0, out:0, broken:0, missing:0, items:[] };
+          tireEntries.forEach(([,s]) => {
+            tireTotals.total+=s.total; tireTotals.available+=s.available;
+            tireTotals.out+=s.out; tireTotals.broken+=s.broken; tireTotals.missing+=s.missing;
+            tireTotals.items.push(...(s.items||[]));
+          });
+          const tireParentId = "sum-expand-Tires";
+          summaryRows += `
+            <div class="summary-row" onclick="var el=document.getElementById('${tireParentId}');el.style.display=el.style.display==='none'?'':'none'" style="cursor:pointer;">
+              <div class="summary-name">Tires &#9660;</div>
+              <div class="summary-stats">
+                <span class="sum-avail">&#10003; ${tireTotals.available} avail</span>
+                ${tireTotals.out     ? `<span class="sum-out">&#8599; ${tireTotals.out} out</span>` : ""}
+                ${tireTotals.broken  ? `<span class="sum-broken">&#128683; ${tireTotals.broken} broken</span>` : ""}
+                ${tireTotals.missing ? `<span class="sum-missing">&#10067; ${tireTotals.missing} missing</span>` : ""}
+                <span class="sum-total">${tireTotals.total} total</span>
+              </div>
+            </div>
+            <div id="${tireParentId}" style="display:none;">
+              ${tireEntries.sort((a,b)=>a[0].localeCompare(b[0])).map(([cat,s]) => {
+                const sizeLabel = cat.replace("Tires — ","") || "Unknown Size";
+                const sizeId = "sum-expand-tire_" + sizeLabel.replace(/[^a-z0-9]/gi,"_");
+                const itemRows = (s.items||[]).sort((a,b)=>(a.eqId||"").localeCompare(b.eqId||"",undefined,{numeric:true})).map(i => {
+                  const sc = i.status==="available"?"sum-avail":i.status==="out"?"sum-out":i.status==="broken"?"sum-broken":"sum-missing";
+                  return `<div class="summary-row summary-row-indent" style="padding-left:36px;"><div class="summary-name" style="font-size:.72rem;">${i.eqId||i.name}</div><div class="summary-stats"><span class="${sc}">${i.status}</span></div></div>`;
+                }).join("");
+                return `
+                  <div class="summary-row summary-row-indent" onclick="var el=document.getElementById('${sizeId}');el.style.display=el.style.display==='none'?'':'none'" style="cursor:pointer;">
+                    <div class="summary-name">\u21B3 ${sizeLabel} &#9660;</div>
+                    <div class="summary-stats">
+                      <span class="sum-avail">&#10003; ${s.available} avail</span>
+                      ${s.out?`<span class="sum-out">&#8599; ${s.out} out</span>`:""}
+                      ${s.broken?`<span class="sum-broken">&#128683; ${s.broken} broken</span>`:""}
+                      <span class="sum-total">${s.total} total</span>
+                    </div>
+                  </div>
+                  <div id="${sizeId}" style="display:none;">${itemRows}</div>`;
+              }).join("")}
+            </div>`;
+        }
+
+        // Other categories (excluding AC, EZ Spares, Tires)
+        otherEntries
+          .filter(([cat]) => !cat.startsWith("EZ Spares") && cat !== "Tires")
+          .forEach(e => { summaryRows += renderRow(e, false, false, null); });
 
         summaryCard.innerHTML = `
           <div class="summary-title">&#128202; Inventory Summary</div>
