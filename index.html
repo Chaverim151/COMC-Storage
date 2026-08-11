@@ -1543,14 +1543,35 @@
     window.printQR = function(eqId, name) {
       const w = window.open("","_blank");
       w.document.write(`<!DOCTYPE html><html><head><title>${eqId}</title>
-        <style>body{font-family:Arial,sans-serif;text-align:center;padding:20px}
-        .label{display:inline-block;border:2px solid #000;padding:16px;border-radius:8px}
-        h2{margin:8px 0 4px;font-size:1.4rem}p{margin:0;font-size:.9rem;color:#555}</style>
+        <style>
+          @page { size: 2in 2in; margin: 0; }
+          * { box-sizing: border-box; margin: 0; padding: 0; }
+          body { width: 2in; height: 2in; display: flex; flex-direction: column;
+                 align-items: center; justify-content: center;
+                 font-family: Arial, sans-serif; background: #fff; }
+          #qr { width: 1.4in; height: 1.4in; }
+          #qr img, #qr canvas { width: 1.4in !important; height: 1.4in !important; }
+          .eq-id { font-size: 13pt; font-weight: 700; letter-spacing: .04em;
+                   margin-top: 4px; text-align: center; }
+          .eq-name { font-size: 7pt; color: #444; text-align: center;
+                     max-width: 1.8in; white-space: nowrap; overflow: hidden;
+                     text-overflow: ellipsis; margin-top: 1px; }
+          .org { font-size: 6pt; color: #888; margin-top: 2px; letter-spacing: .06em;
+                 text-transform: uppercase; }
+        </style>
         <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"><\/script>
-        </head><body><div class="label">
-        <div id="qr"></div><h2>${eqId}</h2><p>${name}</p></div>
-        <script>new QRCode(document.getElementById("qr"),{text:"COMC:${eqId}",width:160,height:160,colorDark:"#000",colorLight:"#fff"});
-        setTimeout(()=>window.print(),800);<\/script></body></html>`);
+        </head><body>
+        <div id="qr"></div>
+        <div class="eq-id">${eqId}</div>
+        <div class="eq-name">${name}</div>
+        <div class="org">Chaverim of Middlesex County</div>
+        <script>
+          new QRCode(document.getElementById("qr"), {
+            text: "COMC:${eqId}", width: 134, height: 134,
+            colorDark: "#000", colorLight: "#fff"
+          });
+          setTimeout(() => window.print(), 800);
+        <\/script></body></html>`);
       w.document.close();
     };
 
