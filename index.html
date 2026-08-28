@@ -4635,9 +4635,10 @@
     document.querySelectorAll(".tab-content").forEach(t=>t.classList.remove("active"));
     if(el) el.classList.add("active");
     document.getElementById("tab-"+name).classList.add("active");
-    if (name === "users"    && window.loadUsers)       window.loadUsers();
+    if (name === "users"    && window.loadUsers)        window.loadUsers();
     if (name === "settings" && window.loadLabelSettings) window.loadLabelSettings();
-    if (name === "tickets" && window.loadTickets)   window.loadTickets();
+    if (name === "tickets"  && window.loadTickets)       window.loadTickets();
+    if (name === "issued"   && window.loadIssuedGear)    window.loadIssuedGear();
     if (name === "log"     && window.reloadLog)       window.reloadLog();
     if (name === "mycalls" && window.reloadMyCalls)   window.reloadMyCalls();
   }
