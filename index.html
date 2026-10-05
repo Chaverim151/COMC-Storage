@@ -6,6 +6,7 @@
   <title>COMC Equipment Manager</title>
   <link rel="icon" type="image/png" href="https://i.ibb.co/WWx03S58/updated-logo.png">
   <link rel="manifest" href="/manifest.json">
+  <script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js"></script>
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="COMC Equipment">
@@ -2714,21 +2715,31 @@
         <div id="u-error" style="color:var(--red);font-size:.82rem;min-height:18px;margin-top:4px"></div>
         <button class="delete-btn" onclick="removeUser('${uid}','${d.displayName||''}')">&#128465; Remove User</button>
       `;
-      document.getElementById("modal-confirm").textContent="Save";
-      document.getElementById("modal-confirm").style.display="";
-      document.getElementById("modal-confirm").onclick=()=>confirmEditUser(uid);
-      modal.style.display="flex";
+      const confirmBtn = document.getElementById("modal-confirm");
+      confirmBtn.textContent = "Save";
+      confirmBtn.style.display = "";
+      confirmBtn.onclick = null;
+      confirmBtn.onclick = () => confirmEditUser(uid);
+      modal.style.display = "flex";
     };
 
     async function confirmEditUser(uid) {
-      const name=document.getElementById("u-name").value.trim();
-      const unit=document.getElementById("u-unit").value.trim();
-      const email=document.getElementById("u-email").value.trim();
-      const role=document.getElementById("u-role").value;
+      const name=document.getElementById("u-name")?.value.trim();
+      const unit=document.getElementById("u-unit")?.value.trim();
+      const email=document.getElementById("u-email")?.value.trim();
+      const role=document.getElementById("u-role")?.value;
       const phone=document.getElementById("u-phone")?.value.trim()||"";
+      console.log("confirmEditUser called:", {uid, name, unit, email, role, phone});
       if(!name||!unit){alert("Name and unit required.");return;}
-      await updateDoc(doc(db,"users",uid),{displayName:name,unitNumber:unit,email,role,phone});
-      closeModal(); window.loadUsers(); showToast("User updated!");
+      if(!role){alert("Role is required.");return;}
+      try {
+        await updateDoc(doc(db,"users",uid),{displayName:name,unitNumber:unit,email,role,phone});
+        console.log("User updated successfully");
+        closeModal(); window.loadUsers(); showToast("User updated! Role: " + role);
+      } catch(e) {
+        console.error("Error updating user:", e);
+        alert("Error saving: " + e.message);
+      }
     }
 
     window.removeUser = async function(uid,name) {
@@ -3045,6 +3056,49 @@
       modal.style.display = "flex";
     };
 
+    // ── EMAILJS ───────────────────────────────────────────────────
+    const EMAILJS_PUBLIC_KEY    = "e1aSQzSbslDgQlHzJ";
+    const EMAILJS_SERVICE_ID    = "COMC";
+    const EMAILJS_TEMPLATE_NEW  = "template_7p6yzdi"; // new ticket → coordinators
+    const EMAILJS_TEMPLATE_RESP = "template_7p6yzdi"; // update once you create a second template
+
+    (function() {
+      if (window.emailjs) emailjs.init({ publicKey: EMAILJS_PUBLIC_KEY });
+    })();
+
+    async function emailCoordinators(ticketType, subject, submitterName, submitterUnit) {
+      if (!window.emailjs || EMAILJS_PUBLIC_KEY === "YOUR_PUBLIC_KEY") return;
+      try {
+        const snap = await getDocs(collection(db,"users"));
+        const coordinatorEmails = [];
+        snap.forEach(d => { const u=d.data(); if (u.role==="admin" && u.email) coordinatorEmails.push(u.email); });
+        if (!coordinatorEmails.length) return;
+        // Send single email with all coordinator emails comma-separated
+        await emailjs.send(EMAILJS_SERVICE_ID, EMAILJS_TEMPLATE_NEW, {
+          to_email:       coordinatorEmails.join(","),
+          ticket_type:    ticketType,
+          ticket_subject: subject,
+          submitter_name: submitterName,
+          submitter_unit: submitterUnit,
+          app_url:        "https://equipment.chaverimmc.org"
+        });
+      } catch(e) { console.warn("EmailJS coordinator notify failed:", e); }
+    }
+
+    async function emailTicketResolved(toEmail, toName, ticketSubject, status, note) {
+      if (!window.emailjs || EMAILJS_PUBLIC_KEY === "YOUR_PUBLIC_KEY") return;
+      try {
+        await emailjs.send(EMAILJS_SERVICE_ID, EMAILJS_TEMPLATE_RESP, {
+          to_email:       toEmail,
+          to_name:        toName,
+          ticket_subject: ticketSubject,
+          ticket_status:  status.toUpperCase(),
+          coordinator_note: note || "No additional notes.",
+          app_url:        "https://equipment.chaverimmc.org"
+        });
+      } catch(e) { console.warn("EmailJS resolution notify failed:", e); }
+    }
+
     // ── TICKET SYSTEM ─────────────────────────────────────────────
     window._ticketFilter = "open";
     window._allTickets   = [];
@@ -3174,7 +3228,9 @@
     async function confirmNewTicket() {
       if (_ticketSubmitting) return;
       _ticketSubmitting = true;
-      document.getElementById("modal-confirm").disabled = true;
+      const btn = document.getElementById("modal-confirm");
+      const origText = btn?.textContent || "Submit Ticket";
+      if (btn) { btn.disabled = true; btn.textContent = "Submitting..."; }
       try {
       const type    = document.getElementById("tk-type")?.value;
       const subject = document.getElementById("tk-subject")?.value.trim();
@@ -3245,6 +3301,14 @@
         await Promise.all(smsPromises);
       } catch(e) { console.warn("SMS notify failed:", e.message); }
 
+      // Email coordinators
+      await emailCoordinators(
+        TICKET_TYPES[type]?.label.replace(/^[^\s]+\s/,"") || type,
+        subject,
+        ticketData.submittedByName || "",
+        ticketData.submittedByUnit || ""
+      );
+
       closeModal();
       showToast("Ticket submitted!");
       switchTab("tickets", document.querySelector('[data-tab="tickets"]'));
@@ -3268,6 +3332,16 @@
       document.getElementById("modal-confirm").onclick = async () => {
         const note = document.getElementById("tk-note")?.value.trim() || "";
         await updateDoc(doc(db,"tickets",id), { status, coordinatorNote: note||null, resolvedAt: serverTimestamp(), resolvedBy: currentUser.displayName||currentUser.email });
+        // Email the submitter
+        try {
+          const tSnap = await getDoc(doc(db,"tickets",id));
+          const t = tSnap.data();
+          if (t?.submittedById) {
+            const uSnap = await getDoc(doc(db,"users",t.submittedById));
+            const u = uSnap.data();
+            if (u?.email) await emailTicketResolved(u.email, u.displayName||"", t.subject||"", status, note);
+          }
+        } catch(e) { console.warn("Email resolution failed:", e); }
         closeModal();
         showToast("Ticket " + status + ".");
       };
