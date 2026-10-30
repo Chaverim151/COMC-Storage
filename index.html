@@ -3125,6 +3125,7 @@
           to_name:        toName,
           ticket_subject: ticketSubject,
           ticket_status:  status.toUpperCase(),
+          status_color:   status === "approved" ? "#2e9e6b" : status === "denied" ? "#d64545" : "#6b7c8a",
           coordinator_note: note || "No additional notes.",
           app_url:        "https://equipment.chaverimmc.org"
         });
